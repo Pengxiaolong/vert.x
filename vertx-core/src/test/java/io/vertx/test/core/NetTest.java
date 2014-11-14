@@ -40,12 +40,12 @@ import io.vertx.core.net.NetClientOptions;
 import io.vertx.core.net.NetServer;
 import io.vertx.core.net.NetServerOptions;
 import io.vertx.core.net.NetSocket;
+import io.vertx.core.net.NetSocketStream;
 import io.vertx.core.net.NetworkOptions;
 import io.vertx.core.net.PKCS12Options;
 import io.vertx.core.net.SocketAddress;
 import io.vertx.core.net.impl.SocketAddressImpl;
 import io.vertx.core.net.impl.SocketDefaults;
-import io.vertx.core.streams.ReadStream;
 import org.junit.Test;
 
 import java.io.BufferedWriter;
@@ -410,24 +410,24 @@ public class NetTest extends VertxTestBase {
     long reconnectInterval = TestUtils.randomPositiveInt();
 
     JsonObject json = new JsonObject();
-    json.putNumber("sendBufferSize", sendBufferSize)
-        .putNumber("receiveBufferSize", receiverBufferSize)
-        .putBoolean("reuseAddress", reuseAddress)
-        .putNumber("trafficClass", trafficClass)
-        .putBoolean("tcpNoDelay", tcpNoDelay)
-        .putBoolean("tcpKeepAlive", tcpKeepAlive)
-        .putNumber("soLinger", soLinger)
-        .putBoolean("usePooledBuffers", usePooledBuffers)
-        .putNumber("idleTimeout", idleTimeout)
-        .putBoolean("ssl", ssl)
-        .putArray("enabledCipherSuites", new JsonArray().addString(enabledCipher))
-        .putNumber("connectTimeout", connectTimeout)
-        .putBoolean("trustAll", trustAll)
-        .putArray("crlPaths", new JsonArray().addString(crlPath))
-        .putObject("keyStoreOptions", new JsonObject().putString("type", "jks").putString("password", ksPassword).putString("path", ksPath))
-        .putObject("trustStoreOptions", new JsonObject().putString("type", "jks").putString("password", tsPassword).putString("path", tsPath))
-        .putNumber("reconnectAttempts", reconnectAttempts)
-        .putNumber("reconnectInterval", reconnectInterval);
+    json.put("sendBufferSize", sendBufferSize)
+        .put("receiveBufferSize", receiverBufferSize)
+        .put("reuseAddress", reuseAddress)
+        .put("trafficClass", trafficClass)
+        .put("tcpNoDelay", tcpNoDelay)
+        .put("tcpKeepAlive", tcpKeepAlive)
+        .put("soLinger", soLinger)
+        .put("usePooledBuffers", usePooledBuffers)
+        .put("idleTimeout", idleTimeout)
+        .put("ssl", ssl)
+        .put("enabledCipherSuites", new JsonArray().add(enabledCipher))
+        .put("connectTimeout", connectTimeout)
+        .put("trustAll", trustAll)
+        .put("crlPaths", new JsonArray().add(crlPath))
+        .put("keyStoreOptions", new JsonObject().put("type", "jks").put("password", ksPassword).put("path", ksPath))
+        .put("trustStoreOptions", new JsonObject().put("type", "jks").put("password", tsPassword).put("path", tsPath))
+        .put("reconnectAttempts", reconnectAttempts)
+        .put("reconnectInterval", reconnectInterval);
 
     NetClientOptions options = new NetClientOptions(json);
     assertEquals(sendBufferSize, options.getSendBufferSize());
@@ -456,23 +456,23 @@ public class NetTest extends VertxTestBase {
     assertEquals(reconnectInterval, options.getReconnectInterval());
 
     // Test other keystore/truststore types
-    json.putObject("keyStoreOptions", new JsonObject().putString("type", "pkcs12").putString("password", ksPassword))
-      .putObject("trustStoreOptions", new JsonObject().putString("type", "pkcs12").putString("password", tsPassword));
+    json.put("keyStoreOptions", new JsonObject().put("type", "pkcs12").put("password", ksPassword))
+      .put("trustStoreOptions", new JsonObject().put("type", "pkcs12").put("password", tsPassword));
     options = new NetClientOptions(json);
     assertTrue(options.getTrustStoreOptions() instanceof PKCS12Options);
     assertTrue(options.getKeyStoreOptions() instanceof PKCS12Options);
 
-    json.putObject("keyStoreOptions", new JsonObject().putString("type", "keyCert"))
-      .putObject("trustStoreOptions", new JsonObject().putString("type", "ca"));
+    json.put("keyStoreOptions", new JsonObject().put("type", "keyCert"))
+      .put("trustStoreOptions", new JsonObject().put("type", "ca"));
     options = new NetClientOptions(json);
     assertTrue(options.getTrustStoreOptions() instanceof CaOptions);
     assertTrue(options.getKeyStoreOptions() instanceof KeyCertOptions);
 
     // Invalid types
-    json.putObject("keyStoreOptions", new JsonObject().putString("type", "foo"));
+    json.put("keyStoreOptions", new JsonObject().put("type", "foo"));
     assertIllegalArgumentException(() -> new NetClientOptions(json));
 
-    json.putObject("trustStoreOptions", new JsonObject().putString("type", "foo"));
+    json.put("trustStoreOptions", new JsonObject().put("type", "foo"));
     assertIllegalArgumentException(() -> new NetClientOptions(json));
   }
 
@@ -598,23 +598,23 @@ public class NetTest extends VertxTestBase {
     int acceptBacklog = TestUtils.randomPortInt();
 
     JsonObject json = new JsonObject();
-    json.putNumber("sendBufferSize", sendBufferSize)
-      .putNumber("receiveBufferSize", receiverBufferSize)
-      .putBoolean("reuseAddress", reuseAddress)
-      .putNumber("trafficClass", trafficClass)
-      .putBoolean("tcpNoDelay", tcpNoDelay)
-      .putBoolean("tcpKeepAlive", tcpKeepAlive)
-      .putNumber("soLinger", soLinger)
-      .putBoolean("usePooledBuffers", usePooledBuffers)
-      .putNumber("idleTimeout", idleTimeout)
-      .putBoolean("ssl", ssl)
-      .putArray("enabledCipherSuites", new JsonArray().addString(enabledCipher))
-      .putArray("crlPaths", new JsonArray().addString(crlPath))
-      .putObject("keyStoreOptions", new JsonObject().putString("type", "jks").putString("password", ksPassword).putString("path", ksPath))
-      .putObject("trustStoreOptions", new JsonObject().putString("type", "jks").putString("password", tsPassword).putString("path", tsPath))
-      .putNumber("port", port)
-      .putString("host", host)
-      .putNumber("acceptBacklog", acceptBacklog);
+    json.put("sendBufferSize", sendBufferSize)
+      .put("receiveBufferSize", receiverBufferSize)
+      .put("reuseAddress", reuseAddress)
+      .put("trafficClass", trafficClass)
+      .put("tcpNoDelay", tcpNoDelay)
+      .put("tcpKeepAlive", tcpKeepAlive)
+      .put("soLinger", soLinger)
+      .put("usePooledBuffers", usePooledBuffers)
+      .put("idleTimeout", idleTimeout)
+      .put("ssl", ssl)
+      .put("enabledCipherSuites", new JsonArray().add(enabledCipher))
+      .put("crlPaths", new JsonArray().add(crlPath))
+      .put("keyStoreOptions", new JsonObject().put("type", "jks").put("password", ksPassword).put("path", ksPath))
+      .put("trustStoreOptions", new JsonObject().put("type", "jks").put("password", tsPassword).put("path", tsPath))
+      .put("port", port)
+      .put("host", host)
+      .put("acceptBacklog", acceptBacklog);
 
     NetServerOptions options = new NetServerOptions(json);
     assertEquals(sendBufferSize, options.getSendBufferSize());
@@ -642,24 +642,24 @@ public class NetTest extends VertxTestBase {
     assertEquals(acceptBacklog, options.getAcceptBacklog());
 
     // Test other keystore/truststore types
-    json.putObject("keyStoreOptions", new JsonObject().putString("type", "pkcs12").putString("password", ksPassword))
-      .putObject("trustStoreOptions", new JsonObject().putString("type", "pkcs12").putString("password", tsPassword));
+    json.put("keyStoreOptions", new JsonObject().put("type", "pkcs12").put("password", ksPassword))
+      .put("trustStoreOptions", new JsonObject().put("type", "pkcs12").put("password", tsPassword));
     options = new NetServerOptions(json);
     assertTrue(options.getTrustStoreOptions() instanceof PKCS12Options);
     assertTrue(options.getKeyStoreOptions() instanceof PKCS12Options);
 
-    json.putObject("keyStoreOptions", new JsonObject().putString("type", "keyCert"))
-      .putObject("trustStoreOptions", new JsonObject().putString("type", "ca"));
+    json.put("keyStoreOptions", new JsonObject().put("type", "keyCert"))
+      .put("trustStoreOptions", new JsonObject().put("type", "ca"));
     options = new NetServerOptions(json);
     assertTrue(options.getTrustStoreOptions() instanceof CaOptions);
     assertTrue(options.getKeyStoreOptions() instanceof KeyCertOptions);
 
 
     // Invalid types
-    json.putObject("keyStoreOptions", new JsonObject().putString("type", "foo"));
+    json.put("keyStoreOptions", new JsonObject().put("type", "foo"));
     assertIllegalArgumentException(() -> new NetServerOptions(json));
 
-    json.putObject("trustStoreOptions", new JsonObject().putString("type", "foo"));
+    json.put("trustStoreOptions", new JsonObject().put("type", "foo"));
     assertIllegalArgumentException(() -> new NetServerOptions(json));
   }
 
@@ -1820,84 +1820,45 @@ public class NetTest extends VertxTestBase {
     await();
   }
 
-  //@Test
-  public void testReadStreamPaused() {
+  @Test
+  public void testReadStreamPauseResume() {
     server.close();
     server = vertx.createNetServer(new NetServerOptions().setAcceptBacklog(1).setPort(1234).setHost("localhost"));
-    ReadStream<NetSocket> stream = server.connectStream();
-    stream.handler(sock -> {});
+    NetSocketStream socketStream = server.connectStream();
+    AtomicBoolean paused = new AtomicBoolean();
+    socketStream.handler(so -> {
+      assertTrue(!paused.get());
+      so.write("hello");
+      so.close();
+    });
     server.listen(ar -> {
       assertTrue(ar.succeeded());
-      // We pause the stream - this causes channel.setAutoRead(false) to be called so there should ne no
-      // more connects after this
-      stream.pause();
-      attemptConnect(0);
+      paused.set(true);
+      socketStream.pause();
+      client.connect(1234, "localhost", ar2 -> {
+        assertTrue(ar2.succeeded());
+        NetSocket so2 = ar2.result();
+        so2.handler(buffer -> {
+          fail();
+        });
+        so2.closeHandler(v -> {
+          paused.set(false);
+          socketStream.resume();
+          client.connect(1234, "localhost", ar3 -> {
+            assertTrue(ar3.succeeded());
+            NetSocket so3 = ar3.result();
+            Buffer buffer = Buffer.buffer();
+            so3.handler(buffer::appendBuffer);
+            so3.closeHandler(v3 -> {
+              assertEquals("hello", buffer.toString("utf-8"));
+              testComplete();
+            });
+          });
+        });
+      });
     });
     await();
   }
-
-  // The stream is paused so it should NEVER connect
-  private void attemptConnect(int count) {
-    if (count == 100) {
-      testComplete();
-    }
-    client.connect(1234, "localhost", ar2 -> {
-      if (ar2.succeeded()) {
-        fail("Should not connect");
-      } else {
-        System.out.println("failed to connect");
-      }
-      attemptConnect(count + 1);
-    });
-  }
-
-// FIXME
-// commented out because intermittently fails until this netty issue is addressed:
-// https://github.com/netty/netty/issues/3007
-//  @Test
-//  public void testReadStreamPauseResume() {
-//
-//    server.close();
-//    server = vertx.createNetServer(new NetServerOptions().setAcceptBacklog(1).setPort(1234).setHost("localhost"));
-//    NetStream stream = server.connectStream();
-//    AtomicBoolean paused = new AtomicBoolean();
-//    stream.handler(so -> {
-//      assert(!paused.get());
-//      so.write("hello");
-//      so.close();
-//    });
-//    server.listen(ar -> {
-//      assertTrue(ar.succeeded());
-//      paused.set(true);
-//      stream.pause();
-//      AtomicInteger count = new AtomicInteger();
-//      Runnable[] r = new Runnable[1];
-//      (r[0] = () -> {
-//        client.connect(1234, "localhost", ar2 -> {
-//          if (ar2.succeeded()) {
-//            // We connect clients until one is rejected
-//            // because we cannot assume a precise number of connections that will succeed
-//            count.incrementAndGet();
-//            r[0].run();
-//            NetSocket so = ar2.result();
-//            so.handler(buffer -> {
-//              assertEquals("hello", buffer.toString("utf-8"));
-//              so.closeHandler(v -> {
-//                if (count.decrementAndGet() == 0) {
-//                  testComplete();
-//                }
-//              });
-//            });
-//          } else {
-//            // When we succeed
-//            paused.set(false);
-//            stream.resume();
-//          }
-//        });
-//      }).run();
-//    });
-//    await();
-//  }
 
   private File setupFile(String testDir, String fileName, String content) throws Exception {
     File file = new File(testDir, fileName);

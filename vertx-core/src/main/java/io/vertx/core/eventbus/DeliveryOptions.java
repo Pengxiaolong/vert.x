@@ -17,11 +17,13 @@
 package io.vertx.core.eventbus;
 
 import io.vertx.codegen.annotations.Options;
-import io.vertx.core.http.CaseInsensitiveHeaders;
 import io.vertx.core.MultiMap;
+import io.vertx.core.http.CaseInsensitiveHeaders;
+import io.vertx.core.impl.Arguments;
 import io.vertx.core.json.JsonObject;
 
 import java.util.Map;
+import java.util.Objects;
 
 /**
  * @author <a href="http://tfox.org">Tim Fox</a>
@@ -47,10 +49,10 @@ public class DeliveryOptions {
   public DeliveryOptions(JsonObject json) {
     this.timeout = json.getLong("timeout", DEFAULT_TIMEOUT);
     this.codecName = json.getString("codecName", null);
-    JsonObject hdrs = json.getObject("headers", null);
+    JsonObject hdrs = json.getJsonObject("headers", null);
     if (hdrs != null) {
       headers = new CaseInsensitiveHeaders();
-      for (Map.Entry<String, Object> entry: hdrs.toMap().entrySet()) {
+      for (Map.Entry<String, Object> entry: hdrs) {
         if (!(entry.getValue() instanceof String)) {
           throw new IllegalStateException("Invalid type for message header value " + entry.getValue().getClass());
         }
@@ -64,9 +66,7 @@ public class DeliveryOptions {
   }
 
   public DeliveryOptions setSendTimeout(long timeout) {
-    if (timeout < 1) {
-      throw new IllegalArgumentException("sendTimeout must be >= 1");
-    }
+    Arguments.require(timeout >= 1, "sendTimeout must be >= 1");
     this.timeout = timeout;
     return this;
   }
@@ -82,6 +82,8 @@ public class DeliveryOptions {
 
   public DeliveryOptions addHeader(String key, String value) {
     checkHeaders();
+    Objects.requireNonNull(key, "no null key accepted");
+    Objects.requireNonNull(value, "no null value accepted");
     headers.add(key, value);
     return this;
   }

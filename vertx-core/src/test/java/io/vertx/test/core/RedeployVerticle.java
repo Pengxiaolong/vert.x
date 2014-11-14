@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2011-2013 The original author or authors
+ * Copyright (c) 2011-2014 The original author or authors
  * ------------------------------------------------------
  * All rights reserved. This program and the accompanying materials
  * are made available under the terms of the Eclipse Public License v1.0
@@ -14,23 +14,21 @@
  * You may elect to redistribute this code under either of these licenses.
  */
 
-package io.vertx.core.file.impl;
+package io.vertx.test.core;
 
-import java.nio.file.Path;
+import io.vertx.core.AbstractVerticle;
 
 /**
  * @author <a href="http://tfox.org">Tim Fox</a>
  */
-public class ModuleFileSystemPathResolver implements PathResolver {
-
-  private final Path adjustment;
-
-  public ModuleFileSystemPathResolver(Path adjustment) {
-    this.adjustment = adjustment;
+public class RedeployVerticle extends AbstractVerticle {
+  @Override
+  public void start() throws Exception {
+    vertx.eventBus().publish("vertstarted", vertx.context().deploymentID());
   }
 
   @Override
-  public Path resolve(Path path) {
-    return adjustment.resolve(path);
+  public void stop() throws Exception {
+    vertx.eventBus().publish("vertstopped", vertx.context().deploymentID());
   }
 }

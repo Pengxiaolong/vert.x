@@ -40,9 +40,11 @@ import io.vertx.core.eventbus.impl.codecs.JsonArrayMessageCodec;
 import io.vertx.core.eventbus.impl.codecs.JsonObjectMessageCodec;
 import io.vertx.core.eventbus.impl.codecs.LongMessageCodec;
 import io.vertx.core.eventbus.impl.codecs.NullMessageCodec;
+import io.vertx.core.eventbus.impl.codecs.PingMessageCodec;
 import io.vertx.core.eventbus.impl.codecs.ReplyExceptionMessageCodec;
 import io.vertx.core.eventbus.impl.codecs.ShortMessageCodec;
 import io.vertx.core.eventbus.impl.codecs.StringMessageCodec;
+import io.vertx.core.impl.Arguments;
 import io.vertx.core.impl.Closeable;
 import io.vertx.core.impl.ContextImpl;
 import io.vertx.core.impl.VertxInternal;
@@ -88,6 +90,8 @@ public class EventBusImpl implements EventBus {
   private static final Logger log = LoggerFactory.getLogger(EventBusImpl.class);
 
   // The standard message codecs
+  private static final MessageCodec<String, String> PING_MESSAGE_CODEC = new PingMessageCodec();
+  private static final MessageCodec<String, String> NULL_MESSAGE_CODEC = new NullMessageCodec();
   private static final MessageCodec<String, String> STRING_MESSAGE_CODEC = new StringMessageCodec();
   private static final MessageCodec<Buffer, Buffer> BUFFER_MESSAGE_CODEC = new BufferMessageCodec();
   private static final MessageCodec<JsonObject, JsonObject> JSON_OBJECT_MESSAGE_CODEC = new JsonObjectMessageCodec();
@@ -102,13 +106,14 @@ public class EventBusImpl implements EventBus {
   private static final MessageCodec<Character, Character> CHAR_MESSAGE_CODEC = new CharMessageCodec();
   private static final MessageCodec<Byte, Byte> BYTE_MESSAGE_CODEC = new ByteMessageCodec();
   private static final MessageCodec<ReplyException, ReplyException> REPLY_EXCEPTION_MESSAGE_CODEC = new ReplyExceptionMessageCodec();
-  private static final MessageCodec<String, String> NULL_MESSAGE_CODEC = new NullMessageCodec();
 
-  private static final String PING_ADDRESS = "__vertx.ping";
-  private static final long PING_INTERVAL = 20000;
-  private static final long PING_REPLY_INTERVAL = 20000;
+
+  private static final Buffer PONG = Buffer.buffer(new byte[] { (byte)1 });
+  private static final String PING_ADDRESS = "__vertx_ping";
 
   private final VertxInternal vertx;
+  private final long pingInterval;
+  private final long pingReplyInterval;
   private ServerID serverID;
   private NetServer server;
   private AsyncMultiMap<String, ServerID> subs;
@@ -118,30 +123,30 @@ public class EventBusImpl implements EventBus {
   private final ConcurrentMap<Class, MessageCodec> defaultCodecMap = new ConcurrentHashMap<>();
   private final ClusterManager clusterMgr;
   private final AtomicLong replySequence = new AtomicLong(0);
-  private final ProxyFactory proxyFactory;
-  private MessageConsumer pingRegistration;
   private final EventBusMetrics metrics;
   private MessageCodec[] systemCodecs;
+  private volatile boolean sendPong = true;
 
-  public EventBusImpl(VertxInternal vertx, long proxyOperationTimeout) {
+  public EventBusImpl(VertxInternal vertx) {
     // Just some dummy server ID
     this.vertx = vertx;
+    this.pingInterval = -1;
+    this.pingReplyInterval = -1;
     this.serverID = new ServerID(-1, "localhost");
     this.server = null;
     this.subs = null;
     this.clusterMgr = null;
-    this.proxyFactory = new ProxyFactory(this, proxyOperationTimeout);
     this.metrics = vertx.metricsSPI().createMetrics(this);
-    setPingHandler();
-    putStandardCodecs();
+    putSystemCodecs();
   }
 
-  public EventBusImpl(VertxInternal vertx, long proxyOperationTimeout, int port, String hostname, ClusterManager clusterManager,
+  public EventBusImpl(VertxInternal vertx, long pingInterval, long pingReplyInterval, int port, String hostname, ClusterManager clusterManager,
                       Handler<AsyncResult<Void>> listenHandler) {
     this.vertx = vertx;
     this.clusterMgr = clusterManager;
-    this.proxyFactory = new ProxyFactory(this, proxyOperationTimeout);
     this.metrics = vertx.metricsSPI().createMetrics(this);
+    this.pingInterval = pingInterval;
+    this.pingReplyInterval = pingReplyInterval;
     clusterMgr.<String, ServerID>getAsyncMultiMap("subs", null, ar -> {
       if (ar.succeeded()) {
         subs = ar.result();
@@ -154,7 +159,7 @@ public class EventBusImpl implements EventBus {
         }
       }
     });
-    putStandardCodecs();
+    putSystemCodecs();
   }
 
   @Override
@@ -180,21 +185,27 @@ public class EventBusImpl implements EventBus {
 
   @Override
   public <T> WriteStream<T> sender(String address) {
+    Objects.requireNonNull(address, "address");
     return (ProducerBase<T>) data -> send(address, data);
   }
 
   @Override
   public <T> WriteStream<T> sender(String address, DeliveryOptions options) {
+    Objects.requireNonNull(address, "address");
+    Objects.requireNonNull(options, "options");
     return (ProducerBase<T>) data -> send(address, data, options);
   }
 
   @Override
   public <T> WriteStream<T> publisher(String address) {
+    Objects.requireNonNull(address, "address");
     return (ProducerBase<T>) data -> publish(address, data);
   }
 
   @Override
   public <T> WriteStream<T> publisher(String address, DeliveryOptions options) {
+    Objects.requireNonNull(address, "address");
+    Objects.requireNonNull(options, "options");
     return (ProducerBase<T>) data -> publish(address, data, options);
   }
 
@@ -209,21 +220,15 @@ public class EventBusImpl implements EventBus {
     return this;
   }
 
-  EventBus forward(Object message) {
-    return forward(message, null);
-  }
-
-  EventBus forward(Object message, DeliveryOptions options) {
-    sendOrPub(null, (MessageImpl)message, options, null);
-    return this;
-  }
   @Override
   public <T> MessageConsumer<T> consumer(String address) {
+    Objects.requireNonNull(address, "address");
     return new HandlerRegistration<>(address, false, false, -1);
   }
 
   @Override
   public <T> MessageConsumer<T> localConsumer(String address) {
+    Objects.requireNonNull(address, "address");
     return new HandlerRegistration<>(address, false, true, -1);
   }
 
@@ -274,16 +279,6 @@ public class EventBusImpl implements EventBus {
   }
 
   @Override
-  public <T> T createProxy(Class<T> clazz, String address) {
-    return proxyFactory.createProxy(clazz, address);
-  }
-
-  @Override
-  public <T> MessageConsumer registerService(T service, String address) {
-    return proxyFactory.registerService(service, address);
-  }
-
-  @Override
   public void close(Handler<AsyncResult<Void>> completionHandler) {
     if (server != null) {
       server.close(ar -> {
@@ -291,11 +286,9 @@ public class EventBusImpl implements EventBus {
           log.error("Failed to close server", ar.cause());
         }
         closeClusterManager(completionHandler);
-        pingRegistration.unregister();
       });
     } else {
       closeClusterManager(completionHandler);
-      pingRegistration.unregister();
     }
   }
 
@@ -320,7 +313,13 @@ public class EventBusImpl implements EventBus {
     }
   }
 
+  // Used in testing
+  public void simulateUnresponsive() {
+    sendPong = false;
+  }
+
   MessageImpl createMessage(boolean send, String address, MultiMap headers, Object body, String codecName) {
+    Objects.requireNonNull(address, "no null address accepted");
     MessageCodec codec;
     if (codecName != null) {
       codec = userCodecMap.get(codecName);
@@ -389,28 +388,28 @@ public class EventBusImpl implements EventBus {
     }
   }
 
-  private void setPingHandler() {
-    pingRegistration = consumer(PING_ADDRESS).handler(msg -> {
-      msg.reply(null);
-    });
-  }
-
   private NetServer setServer(int port, String hostName, Handler<AsyncResult<Void>> listenHandler) {
     NetServer server = vertx.createNetServer(new NetServerOptions().setPort(port).setHost(hostName)).connectHandler(socket -> {
       RecordParser parser = RecordParser.newFixed(4, null);
       Handler<Buffer> handler = new Handler<Buffer>() {
         int size = -1;
-
         public void handle(Buffer buff) {
           if (size == -1) {
             size = buff.getInt(0);
             parser.fixedSizeMode(size);
           } else {
             MessageImpl received = new MessageImpl();
-            received.readFromWire(buff, userCodecMap, systemCodecs);
-            receiveMessage(received, -1, null, null);
+            received.readFromWire(socket, buff, userCodecMap, systemCodecs);
             parser.fixedSizeMode(4);
             size = -1;
+            if (received.codec() == PING_MESSAGE_CODEC) {
+              // Just send back pong directly on connection
+              if (sendPong) {
+                socket.write(PONG);
+              }
+            } else {
+              receiveMessage(received, -1, null, null);
+            }
           }
         }
       };
@@ -428,7 +427,6 @@ public class EventBusImpl implements EventBus {
         int serverPort = (publicPort == -1) ? server.actualPort() : publicPort;
         String serverHost = (publicHost == null) ? hostName : publicHost;
         EventBusImpl.this.serverID = new ServerID(serverPort, serverHost);
-        setPingHandler();
       }
       if (listenHandler != null) {
         if (asyncResult.succeeded()) {
@@ -467,11 +465,10 @@ public class EventBusImpl implements EventBus {
     }
   }
 
-  private void putStandardCodecs() {
-    putCodecs(STRING_MESSAGE_CODEC, BUFFER_MESSAGE_CODEC, JSON_OBJECT_MESSAGE_CODEC, JSON_ARRAY_MESSAGE_CODEC,
+  private void putSystemCodecs() {
+    putCodecs(NULL_MESSAGE_CODEC, PING_MESSAGE_CODEC, STRING_MESSAGE_CODEC, BUFFER_MESSAGE_CODEC, JSON_OBJECT_MESSAGE_CODEC, JSON_ARRAY_MESSAGE_CODEC,
       BYTE_ARRAY_MESSAGE_CODEC, INT_MESSAGE_CODEC, LONG_MESSAGE_CODEC, FLOAT_MESSAGE_CODEC, DOUBLE_MESSAGE_CODEC,
-      BOOLEAN_MESSAGE_CODEC, SHORT_MESSAGE_CODEC, CHAR_MESSAGE_CODEC, BYTE_MESSAGE_CODEC, REPLY_EXCEPTION_MESSAGE_CODEC,
-      NULL_MESSAGE_CODEC);
+      BOOLEAN_MESSAGE_CODEC, SHORT_MESSAGE_CODEC, CHAR_MESSAGE_CODEC, BYTE_MESSAGE_CODEC, REPLY_EXCEPTION_MESSAGE_CODEC);
   }
 
   private void putCodecs(MessageCodec... codecs) {
@@ -709,15 +706,15 @@ public class EventBusImpl implements EventBus {
   }
 
   private void schedulePing(ConnectionHolder holder) {
-    holder.pingTimeoutID = vertx.setTimer(PING_INTERVAL, id1 -> {
+    holder.pingTimeoutID = vertx.setTimer(pingInterval, id1 -> {
       // If we don't get a pong back in time we close the connection
-      holder.timeoutID = vertx.setTimer(PING_REPLY_INTERVAL, id2 -> {
+      holder.timeoutID = vertx.setTimer(pingReplyInterval, id2 -> {
         // Didn't get pong in time - consider connection dead
         log.warn("No pong from server " + serverID + " - will consider it dead");
         cleanupConnection(holder.theServerID, holder, true);
       });
-      MessageImpl pingMessage = new MessageImpl<>(serverID, PING_ADDRESS, null, null, null, new NullMessageCodec(), true);
-      holder.socket.write(pingMessage.writeToWire());
+      MessageImpl pingMessage = new MessageImpl<>(serverID, PING_ADDRESS, null, null, null, new PingMessageCodec(), true);
+      holder.socket.write(pingMessage.encodeToWire());
     });
   }
 
@@ -854,11 +851,11 @@ public class EventBusImpl implements EventBus {
 
     void writeMessage(MessageImpl message) {
       if (connected) {
-        socket.write(message.writeToWire());
+        socket.write(message.encodeToWire());
       } else {
         synchronized (this) {
           if (connected) {
-            socket.write(message.writeToWire());
+            socket.write(message.encodeToWire());
           } else {
             pending.add(message);
           }
@@ -880,7 +877,7 @@ public class EventBusImpl implements EventBus {
       // Start a pinger
       schedulePing(ConnectionHolder.this);
       for (MessageImpl message : pending) {
-        socket.write(message.writeToWire());
+        socket.write(message.encodeToWire());
       }
       pending.clear();
     }
@@ -989,9 +986,7 @@ public class EventBusImpl implements EventBus {
 
     @Override
     public MessageConsumer<T> setMaxBufferedMessages(int maxBufferedMessages) {
-      if (maxBufferedMessages < 0) {
-        throw new IllegalArgumentException("Max buffered messages cannot be negative");
-      }
+      Arguments.require(maxBufferedMessages >= 0, "Max buffered messages cannot be negative");
       while (pending.size() > maxBufferedMessages) {
         pending.poll();
       }

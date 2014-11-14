@@ -16,7 +16,9 @@
 
 package io.vertx.test.core;
 
+import io.vertx.core.DeploymentOptions;
 import io.vertx.core.Starter;
+import io.vertx.core.Vertx;
 import io.vertx.core.VertxOptions;
 import io.vertx.core.json.JsonObject;
 import org.junit.Test;
@@ -59,13 +61,22 @@ public class StarterTest extends VertxTestBase {
 
   @Test
   public void testRunVerticle() throws Exception {
+    testRunVerticleMultiple(1);
+  }
+
+  @Test
+  public void testRunVerticleMultipleInstances() throws Exception {
+    testRunVerticleMultiple(10);
+  }
+
+  public void testRunVerticleMultiple(int instances) throws Exception {
     Starter starter = new Starter();
-    String[] args = new String[] {"run", "java:" + TestVerticle.class.getCanonicalName()};
+    String[] args = new String[] {"run", "java:" + TestVerticle.class.getCanonicalName(), "-instances", String.valueOf(instances)};
     Thread t = new Thread(() -> {
       starter.run(args);
     });
     t.start();
-    waitUntil(() -> TestVerticle.instanceCount.get() == 1);
+    waitUntil(() -> TestVerticle.instanceCount.get() == instances);
     assertTrue(t.isAlive()); // It's blocked
     List<String> processArgs = TestVerticle.processArgs;
     assertEquals(Arrays.asList(args), TestVerticle.processArgs);
@@ -125,7 +136,7 @@ public class StarterTest extends VertxTestBase {
   @Test
   public void testRunVerticleWithConfString() throws Exception {
     Starter starter = new Starter();
-    JsonObject conf = new JsonObject().putString("foo", "bar").putNumber("wibble", 123);
+    JsonObject conf = new JsonObject().put("foo", "bar").put("wibble", 123);
     String[] args = new String[] {"run", "java:" + TestVerticle.class.getCanonicalName(), "-conf", conf.encode()};
     Thread t = new Thread(() -> {
       starter.run(args);
@@ -145,7 +156,7 @@ public class StarterTest extends VertxTestBase {
     Path tempFile = Files.createTempFile(tempDir, "conf", "json");
     try {
       Starter starter = new Starter();
-      JsonObject conf = new JsonObject().putString("foo", "bar").putNumber("wibble", 123);
+      JsonObject conf = new JsonObject().put("foo", "bar").put("wibble", 123);
       Files.write(tempFile, conf.encode().getBytes());
       String[] args = new String[]{"run", "java:" + TestVerticle.class.getCanonicalName(), "-conf", tempFile.toString()};
       Thread t = new Thread(() -> {
@@ -166,19 +177,47 @@ public class StarterTest extends VertxTestBase {
 
   @Test
   public void testConfigureFromSystemProperties() throws Exception {
-    VertxOptions opts = new VertxOptions();
+    testConfigureFromSystemProperties(false);
+  }
+
+  @Test
+  public void testConfigureFromSystemPropertiesClustered() throws Exception {
+    testConfigureFromSystemProperties(true);
+  }
+
+  private void testConfigureFromSystemProperties(boolean clustered) throws Exception {
 
     // One for each type that we support
-    System.setProperty("vertx.options.eventLoopPoolSize", "123");
-    System.setProperty("vertx.options.maxEventLoopExecuteTime", "123767667");
-    System.setProperty("vertx.options.clustered", "true");
-    System.setProperty("vertx.options.clusterHost", "foohost");
+    System.setProperty(Starter.VERTX_OPTIONS_PROP_PREFIX + "eventLoopPoolSize", "123");
+    System.setProperty(Starter.VERTX_OPTIONS_PROP_PREFIX + "maxEventLoopExecuteTime", "123767667");
+    System.setProperty(Starter.VERTX_OPTIONS_PROP_PREFIX + "metricsEnabled", "true");
+    System.setProperty(Starter.VERTX_OPTIONS_PROP_PREFIX + "haGroup", "somegroup");
 
-    Starter.configureFromSystemProperties(opts, "vertx.options.");
+    System.setProperty(Starter.DEPLOYMENT_OPTIONS_PROP_PREFIX + "redeployScanPeriod", "612536253");
+
+    MyStarter starter = new MyStarter();
+    String[] args;
+    if (clustered) {
+      args = new String[]{"run", "java:" + TestVerticle.class.getCanonicalName(), "-cluster"};
+    } else {
+      args = new String[]{"run", "java:" + TestVerticle.class.getCanonicalName()};
+    }
+    Thread t = new Thread(() -> {
+      starter.run(args);
+    });
+    t.start();
+    waitUntil(() -> TestVerticle.instanceCount.get() == 1);
+
+    VertxOptions opts = starter.getVertxOptions();
+
     assertEquals(123, opts.getEventLoopPoolSize(), 0);
     assertEquals(123767667l, opts.getMaxEventLoopExecuteTime());
-    assertEquals(true, opts.isClustered());
-    assertEquals("foohost", opts.getClusterHost());
+    assertEquals(true, opts.isMetricsEnabled());
+    assertEquals("somegroup", opts.getHAGroup());
+
+    DeploymentOptions depOptions = starter.getDeploymentOptions();
+
+    assertEquals(612536253, depOptions.getRedeployScanPeriod());
   }
 
   private void clearProperties() {
@@ -199,20 +238,50 @@ public class StarterTest extends VertxTestBase {
   @Test
   public void testConfigureFromSystemPropertiesInvalidPropertyName() throws Exception {
 
-    VertxOptions opts = new VertxOptions();
-    System.setProperty("vertx.options.nosuchproperty", "123");
+    System.setProperty(Starter.VERTX_OPTIONS_PROP_PREFIX + "nosuchproperty", "123");
+
     // Should be ignored
-    Starter.configureFromSystemProperties(opts, "vertx.options.");
+
+    MyStarter starter = new MyStarter();
+    String[] args = new String[] {"run", "java:" + TestVerticle.class.getCanonicalName()};
+    Thread t = new Thread(() -> {
+      starter.run(args);
+    });
+    t.start();
+    waitUntil(() -> TestVerticle.instanceCount.get() == 1);
+
+    VertxOptions opts = starter.getVertxOptions();
     assertEquals(new VertxOptions(), opts);
+
   }
 
   @Test
   public void testConfigureFromSystemPropertiesInvalidPropertyType() throws Exception {
-    VertxOptions opts = new VertxOptions();
     // One for each type that we support
-    System.setProperty("vertx.options.eventLoopPoolSize", "sausages");
+    System.setProperty(Starter.VERTX_OPTIONS_PROP_PREFIX + "eventLoopPoolSize", "sausages");
     // Should be ignored
-    Starter.configureFromSystemProperties(opts, "vertx.options.");
+
+    MyStarter starter = new MyStarter();
+    String[] args = new String[] {"run", "java:" + TestVerticle.class.getCanonicalName()};
+    Thread t = new Thread(() -> {
+      starter.run(args);
+    });
+    t.start();
+    waitUntil(() -> TestVerticle.instanceCount.get() == 1);
+
+    VertxOptions opts = starter.getVertxOptions();
     assertEquals(new VertxOptions(), opts);
+  }
+
+  class MyStarter extends Starter {
+    public Vertx getVert() {
+      return vertx;
+    }
+    public VertxOptions getVertxOptions() {
+      return options;
+    }
+    public DeploymentOptions getDeploymentOptions() {
+      return deploymentOptions;
+    }
   }
 }

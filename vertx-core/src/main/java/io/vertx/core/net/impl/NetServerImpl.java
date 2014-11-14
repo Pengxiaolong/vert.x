@@ -19,7 +19,6 @@ package io.vertx.core.net.impl;
 import io.netty.bootstrap.ServerBootstrap;
 import io.netty.channel.Channel;
 import io.netty.channel.ChannelFuture;
-import io.netty.channel.ChannelFutureListener;
 import io.netty.channel.ChannelHandlerContext;
 import io.netty.channel.ChannelInitializer;
 import io.netty.channel.ChannelOption;
@@ -33,7 +32,6 @@ import io.netty.channel.socket.nio.NioServerSocketChannel;
 import io.netty.handler.ssl.SslHandler;
 import io.netty.handler.stream.ChunkedWriteHandler;
 import io.netty.handler.timeout.IdleStateHandler;
-import io.netty.util.concurrent.GenericFutureListener;
 import io.netty.util.concurrent.GlobalEventExecutor;
 import io.vertx.core.AsyncResult;
 import io.vertx.core.AsyncResultHandler;
@@ -49,11 +47,10 @@ import io.vertx.core.metrics.spi.NetMetrics;
 import io.vertx.core.net.NetServer;
 import io.vertx.core.net.NetServerOptions;
 import io.vertx.core.net.NetSocket;
-import io.vertx.core.streams.ReadStream;
+import io.vertx.core.net.NetSocketStream;
 
 import java.net.InetAddress;
 import java.net.InetSocketAddress;
-import java.util.ArrayDeque;
 import java.util.Map;
 import java.util.Queue;
 import java.util.concurrent.ConcurrentHashMap;
@@ -77,14 +74,14 @@ public class NetServerImpl implements NetServer, Closeable {
   private final HandlerManager<NetSocket> handlerManager = new HandlerManager<>(availableWorkers);
   private ChannelGroup serverChannelGroup;
   private boolean listening;
-  private volatile ServerID id;
+  private ServerID id;
   private NetServerImpl actualServer;
   private ChannelFuture bindFuture;
   private int actualPort;
   private Queue<Runnable> bindListeners = new ConcurrentLinkedQueue<>();
   private boolean listenersRun;
   private ContextImpl listenContext;
-  private NetReadStream connectStream = new NetReadStream();
+  private NetSocketStreamImpl connectStream = new NetSocketStreamImpl();
 
   public NetServerImpl(VertxInternal vertx, NetServerOptions options) {
     this.vertx = vertx;
@@ -112,7 +109,7 @@ public class NetServerImpl implements NetServer, Closeable {
   }
 
   @Override
-  public ReadStream<NetSocket> connectStream() {
+  public NetSocketStream connectStream() {
     return connectStream;
   }
 
@@ -144,11 +141,15 @@ public class NetServerImpl implements NetServer, Closeable {
         ServerBootstrap bootstrap = new ServerBootstrap();
         bootstrap.group(availableWorkers);
         bootstrap.channel(NioServerSocketChannel.class);
-        sslHelper.checkSSL(vertx);
+        sslHelper.validate(vertx);
 
         bootstrap.childHandler(new ChannelInitializer<Channel>() {
           @Override
           protected void initChannel(Channel ch) throws Exception {
+            if (connectStream.paused) {
+              ch.close();
+              return;
+            }
             ChannelPipeline pipeline = ch.pipeline();
             if (sslHelper.isSSL()) {
               SslHandler sslHandler = sslHelper.createSslHandler(vertx, false);
@@ -173,12 +174,7 @@ public class NetServerImpl implements NetServer, Closeable {
 
         try {
           InetSocketAddress addr = new InetSocketAddress(InetAddress.getByName(options.getHost()), options.getPort());
-          bindFuture = bootstrap.bind(addr).addListener(new ChannelFutureListener() {
-            @Override
-            public void operationComplete(ChannelFuture future) throws Exception {
-              runListeners();
-            }
-          });
+          bindFuture = bootstrap.bind(addr).addListener(future -> runListeners());
           this.addListener(() -> {
             if (bindFuture.isSuccess()) {
               log.trace("Net server listening on " + options.getHost() + ":" + bindFuture.channel().localAddress());
@@ -192,7 +188,7 @@ public class NetServerImpl implements NetServer, Closeable {
             }
           });
           serverChannelGroup.add(bindFuture.channel());
-        } catch (final Throwable t) {
+        } catch (Throwable t) {
           // Make sure we send the exception back through the handler (if any)
           if (listenHandler != null) {
             vertx.runOnContext(v ->  listenHandler.handle(Future.completedFuture(t)));
@@ -220,7 +216,7 @@ public class NetServerImpl implements NetServer, Closeable {
       // just add it to the future so it gets notified once the bind is complete
       actualServer.addListener(() -> {
         if (listenHandler != null) {
-          final AsyncResult<NetServer> res;
+          AsyncResult<NetServer> res;
           if (actualServer.bindFuture.isSuccess()) {
             res = Future.completedFuture(NetServerImpl.this);
           } else {
@@ -349,7 +345,7 @@ public class NetServerImpl implements NetServer, Closeable {
     listenersRun = true;
   }
 
-  private void actualClose(final ContextImpl closeContext, final Handler<AsyncResult<Void>> done) {
+  private void actualClose(ContextImpl closeContext, Handler<AsyncResult<Void>> done) {
     if (id != null) {
       vertx.sharedNetServers().remove(id);
     }
@@ -371,7 +367,7 @@ public class NetServerImpl implements NetServer, Closeable {
 
   }
 
-  private void executeCloseDone(final ContextImpl closeContext, final Handler<AsyncResult<Void>> done, final Exception e) {
+  private void executeCloseDone(ContextImpl closeContext, Handler<AsyncResult<Void>> done, Exception e) {
     if (done != null) {
       closeContext.execute(() -> done.handle(Future.completedFuture(e)), false);
     }
@@ -384,11 +380,11 @@ public class NetServerImpl implements NetServer, Closeable {
 
     @Override
     public void channelActive(ChannelHandlerContext ctx) throws Exception {
-      final Channel ch = ctx.channel();
+      Channel ch = ctx.channel();
       EventLoop worker = ch.eventLoop();
 
       //Choose a handler
-      final HandlerHolder<NetSocket> handler = handlerManager.chooseHandler(worker);
+      HandlerHolder<NetSocket> handler = handlerManager.chooseHandler(worker);
       if (handler == null) {
         //Ignore
         return;
@@ -398,14 +394,11 @@ public class NetServerImpl implements NetServer, Closeable {
         SslHandler sslHandler = ch.pipeline().get(SslHandler.class);
 
         io.netty.util.concurrent.Future<Channel> fut = sslHandler.handshakeFuture();
-        fut.addListener(new GenericFutureListener<io.netty.util.concurrent.Future<Channel>>() {
-          @Override
-          public void operationComplete(io.netty.util.concurrent.Future<Channel> future) throws Exception {
-            if (future.isSuccess()) {
-              connected(ch, handler);
-            } else {
-              log.error("Client from origin " + ch.remoteAddress() + " failed to connect over ssl");
-            }
+        fut.addListener(future -> {
+          if (future.isSuccess()) {
+            connected(ch, handler);
+          } else {
+            log.error("Client from origin " + ch.remoteAddress() + " failed to connect over ssl");
           }
         });
       } else {
@@ -413,7 +406,7 @@ public class NetServerImpl implements NetServer, Closeable {
       }
     }
 
-    private void connected(final Channel ch, final HandlerHolder<NetSocket> handler) {
+    private void connected(Channel ch, HandlerHolder<NetSocket> handler) {
       handler.context.execute(() -> doConnected(ch, handler), true);
     }
 
@@ -433,26 +426,19 @@ public class NetServerImpl implements NetServer, Closeable {
     super.finalize();
   }
 
-  class NetReadStream implements Handler<NetSocket>, ReadStream<NetSocket> {
+  class NetSocketStreamImpl implements Handler<NetSocket>, NetSocketStream {
 
     protected Handler<NetSocket> handler;
-    private final Queue<NetSocket> pending = new ArrayDeque<>(8);
     private boolean paused;
     private Handler<Void> endHandler;
 
     @Override
     public void handle(NetSocket event) {
-      if (paused) {
-        event.pause();
-        pending.add(event);
-      } else {
-        checkNextTick();
-        handler.handle(event);
-      }
+      handler.handle(event);
     }
 
     @Override
-    public NetReadStream handler(Handler<NetSocket> handler) {
+    public NetSocketStreamImpl handler(Handler<NetSocket> handler) {
       if (listening) {
         throw new IllegalStateException("Cannot set connectHandler when server is listening");
       }
@@ -461,49 +447,31 @@ public class NetServerImpl implements NetServer, Closeable {
     }
 
     @Override
-    public NetReadStream pause() {
+    public NetSocketStreamImpl pause() {
       if (!paused) {
-        NetServerImpl.this.bindFuture.channel().config().setAutoRead(false);
         paused = true;
       }
       return this;
     }
 
     @Override
-    public NetReadStream resume() {
+    public NetSocketStreamImpl resume() {
       if (paused) {
-        NetServerImpl.this.bindFuture.channel().config().setAutoRead(true);
         paused = false;
-        checkNextTick();
       }
       return this;
     }
 
     @Override
-    public NetReadStream endHandler(Handler<Void> endHandler) {
+    public NetSocketStreamImpl endHandler(Handler<Void> endHandler) {
       this.endHandler = endHandler;
       return this;
     }
 
     @Override
-    public NetReadStream exceptionHandler(Handler<Throwable> handler) {
+    public NetSocketStreamImpl exceptionHandler(Handler<Throwable> handler) {
       // Should we use it in the server close exception handler ?
       return this;
-    }
-
-    private void checkNextTick() {
-      // Check if there are more pending messages in the queue that can be processed next time around
-      if (!pending.isEmpty()) {
-        vertx.runOnContext(v -> {
-          if (!paused) {
-            NetSocket event = pending.poll();
-            if (event != null) {
-              event.resume();
-              NetReadStream.this.handle(event);
-            }
-          }
-        });
-      }
     }
   }
 }

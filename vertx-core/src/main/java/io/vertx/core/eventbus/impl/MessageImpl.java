@@ -27,6 +27,9 @@ import io.vertx.core.eventbus.MessageCodec;
 import io.vertx.core.eventbus.ReplyException;
 import io.vertx.core.eventbus.ReplyFailure;
 import io.vertx.core.http.CaseInsensitiveHeaders;
+import io.vertx.core.logging.Logger;
+import io.vertx.core.logging.impl.LoggerFactory;
+import io.vertx.core.net.NetSocket;
 import io.vertx.core.net.impl.ServerID;
 
 import java.util.List;
@@ -37,8 +40,11 @@ import java.util.Map;
  */
 public class MessageImpl<U, V> implements Message<V> {
 
+  private static final Logger log = LoggerFactory.getLogger(MessageImpl.class);
+
   private static final byte WIRE_PROTOCOL_VERSION = 1;
 
+  private NetSocket socket;
   private EventBusImpl bus;
   private ServerID sender;
   private String address;
@@ -51,8 +57,6 @@ public class MessageImpl<U, V> implements Message<V> {
   private Buffer wireBuffer;
   private int bodyPos;
   private int headersPos;
-  private boolean isForwarded;
-  private boolean readBody;
 
   public MessageImpl() {
   }
@@ -69,6 +73,7 @@ public class MessageImpl<U, V> implements Message<V> {
   }
 
   private MessageImpl(MessageImpl<U, V> other) {
+    this.socket = other.socket;
     this.bus = other.bus;
     this.sender = other.sender;
     this.address = other.address;
@@ -89,11 +94,12 @@ public class MessageImpl<U, V> implements Message<V> {
       this.wireBuffer = other.wireBuffer;
       this.bodyPos = other.bodyPos;
       this.headersPos = other.headersPos;
-      this.headersPos = other.headersPos;
-      this.readBody = other.readBody;
     }
     this.send = other.send;
-    this.isForwarded = other.isForwarded;
+  }
+
+  NetSocket getSocket() {
+    return socket;
   }
 
   public MessageImpl<U, V> copyBeforeReceive() {
@@ -111,8 +117,9 @@ public class MessageImpl<U, V> implements Message<V> {
     if (headers == null) {
       // The message has been read from the wire
       if (headersPos != 0) {
-        readHeaders();
-      } else {
+        decodeHeaders();
+      }
+      if (headers == null) {
         headers = new CaseInsensitiveHeaders();
       }
     }
@@ -122,9 +129,9 @@ public class MessageImpl<U, V> implements Message<V> {
   @Override
   public V body() {
     // Lazily decode the body
-    if (receivedBody == null && bodyPos != 0 && !readBody) {
+    if (receivedBody == null && bodyPos != 0) {
       // The message has been read from the wire
-      readBody();
+      decodeBody();
     }
     return receivedBody;
   }
@@ -134,8 +141,8 @@ public class MessageImpl<U, V> implements Message<V> {
     return replyAddress;
   }
 
-  public Buffer writeToWire() {
-    int length = 1024;
+  public Buffer encodeToWire() {
+    int length = 1024; // TODO make this configurable
     Buffer buffer = Buffer.buffer(length);
     buffer.appendInt(0);
     buffer.appendByte(WIRE_PROTOCOL_VERSION);
@@ -154,14 +161,16 @@ public class MessageImpl<U, V> implements Message<V> {
     }
     buffer.appendInt(sender.port);
     writeString(buffer, sender.host);
-    buffer.appendByte(isForwarded ? (byte)0 : (byte)1);
-    writeHeaders(buffer);
+    encodeHeaders(buffer);
     writeBody(buffer);
     buffer.setInt(0, buffer.length() - 4);
+//    if (buffer.length()> length) {
+//      log.warn("Overshot length " + length + " actual " + buffer.length());
+//    }
     return buffer;
   }
 
-  public void readFromWire(Buffer buffer, Map<String, MessageCodec> codecMap, MessageCodec[] systemCodecs) {
+  public void readFromWire(NetSocket socket, Buffer buffer, Map<String, MessageCodec> codecMap, MessageCodec[] systemCodecs) {
     int pos = 0;
     // Overall Length already read when passed in here
     byte protocolVersion = buffer.getByte(pos);
@@ -208,25 +217,23 @@ public class MessageImpl<U, V> implements Message<V> {
     bytes = buffer.getBytes(pos, pos + length);
     String senderHost = new String(bytes, CharsetUtil.UTF_8);
     pos += length;
-    isForwarded = (buffer.getByte(pos) == 0);
-    pos++;
     headersPos = pos;
     int headersLength = buffer.getInt(pos);
     pos += headersLength;
     bodyPos = pos;
     sender = new ServerID(senderPort, senderHost);
     wireBuffer = buffer;
+    this.socket = socket;
   }
 
-  private void readBody() {
+  private void decodeBody() {
     receivedBody = messageCodec.decodeFromWire(bodyPos, wireBuffer);
-    readBody = true;
+    bodyPos = 0;
   }
 
-  private void writeHeaders(Buffer buffer) {
+  private void encodeHeaders(Buffer buffer) {
     if (headers != null && !headers.isEmpty()) {
-      // Headers exist, have been decoded from the wire, or are new and need to be encoded
-      int headersLengthPos = buffer.getByteBuf().writerIndex();
+      int headersLengthPos = buffer.length();
       buffer.appendInt(0);
       buffer.appendInt(headers.size());
       List<Map.Entry<String, String>> entries = headers.entries();
@@ -234,19 +241,14 @@ public class MessageImpl<U, V> implements Message<V> {
         writeString(buffer, entry.getKey());
         writeString(buffer, entry.getValue());
       }
-      int headersEndPos = buffer.getByteBuf().writerIndex();
+      int headersEndPos = buffer.length();
       buffer.setInt(headersLengthPos, headersEndPos - headersLengthPos);
-    } else if (headers == null && headersPos != 0) {
-      // Headers are in undecoded form in the buffer
-      int length = wireBuffer.getInt(headersPos);
-      Buffer sliced = wireBuffer.slice(headersPos, headersPos + length);
-      buffer.appendBuffer(sliced);
     } else {
       buffer.appendInt(4);
     }
   }
 
-  private void readHeaders() {
+  private void decodeHeaders() {
     int length = wireBuffer.getInt(headersPos);
     if (length != 0) {
       headersPos += 4;
@@ -256,25 +258,22 @@ public class MessageImpl<U, V> implements Message<V> {
       for (int i = 0; i < numHeaders; i++) {
         int keyLength = wireBuffer.getInt(headersPos);
         headersPos += 4;
-        String key = wireBuffer.getString(headersPos, headersPos + keyLength);
+        byte[] bytes = wireBuffer.getBytes(headersPos, headersPos + keyLength);
+        String key = new String(bytes, CharsetUtil.UTF_8);
         headersPos += keyLength;
         int valLength = wireBuffer.getInt(headersPos);
         headersPos += 4;
-        String val = wireBuffer.getString(headersPos, headersPos + valLength);
+        bytes = wireBuffer.getBytes(headersPos, headersPos + valLength);
+        String val = new String(bytes, CharsetUtil.UTF_8);
         headersPos += valLength;
         headers.add(key, val);
       }
     }
+    headersPos = 0;
   }
 
   private void writeBody(Buffer buff) {
-    if (sentBody != null) {
-      messageCodec.encodeToWire(buff, sentBody);
-    } else if (bodyPos != 0) {
-      int length = wireBuffer.getInt(bodyPos);
-      Buffer bytes = wireBuffer.slice(bodyPos, bodyPos + 4 + length);
-      buff.appendBuffer(bytes);
-    }
+    messageCodec.encodeToWire(buff, sentBody);
   }
 
   private void writeString(Buffer buff, String str) {
@@ -287,18 +286,6 @@ public class MessageImpl<U, V> implements Message<V> {
   public void fail(int failureCode, String message) {
     sendReply(bus.createMessage(true, replyAddress, null,
               new ReplyException(ReplyFailure.RECIPIENT_FAILURE, failureCode, message), null), null, null);
-  }
-
-  @Override
-  public void forward(String address) {
-    forward(address, null);
-  }
-
-  @Override
-  public void forward(String address, DeliveryOptions options) {
-    this.address = address;
-    this.isForwarded = true;
-    bus.forward(this, options);
   }
 
   @Override
@@ -341,11 +328,6 @@ public class MessageImpl<U, V> implements Message<V> {
     if (bus != null && replyAddress != null) {
       bus.sendReply(sender, msg, options, replyHandler);
     }
-  }
-
-  @Override
-  public boolean isForward() {
-    return this.isForwarded;
   }
 
 

@@ -39,6 +39,7 @@ import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
 import java.util.Random;
+import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
@@ -62,7 +63,7 @@ public class DeploymentTest extends VertxTestBase {
   public void testOptions() {
     DeploymentOptions options = new DeploymentOptions();
     assertNull(options.getConfig());
-    JsonObject config = new JsonObject().putString("foo", "bar").putObject("obj", new JsonObject().putNumber("quux", 123));
+    JsonObject config = new JsonObject().put("foo", "bar").put("obj", new JsonObject().put("quux", 123));
     assertEquals(options, options.setConfig(config));
     assertEquals(config, options.getConfig());
     assertFalse(options.isWorker());
@@ -75,40 +76,82 @@ public class DeploymentTest extends VertxTestBase {
     String rand = TestUtils.randomUnicodeString(1000);
     assertEquals(options, options.setIsolationGroup(rand));
     assertEquals(rand, options.getIsolationGroup());
-    assertFalse(options.isHA());
-    assertEquals(options, options.setHA(true));
-    assertTrue(options.isHA());
+    assertFalse(options.isHa());
+    assertEquals(options, options.setHa(true));
+    assertTrue(options.isHa());
     assertNull(options.getExtraClasspath());
     List<String> cp = Arrays.asList("foo", "bar");
     assertEquals(options, options.setExtraClasspath(cp));
     assertSame(cp, options.getExtraClasspath());
+    assertFalse(options.isRedeploy());
+    assertSame(options, options.setRedeploy(true));
+    assertTrue(options.isRedeploy());
+    assertEquals(DeploymentOptions.DEFAULT_REDEPLOY_GRACE_PERIOD, options.getRedeployGracePeriod());
+    int randInt = TestUtils.randomPositiveInt();
+    assertEquals(options, options.setRedeployGracePeriod(randInt));
+    assertEquals(randInt, options.getRedeployGracePeriod());
+    randInt = TestUtils.randomPositiveInt();
+    assertEquals(options, options.setRedeployScanPeriod(randInt));
+    assertEquals(randInt, options.getRedeployScanPeriod());
+    try {
+      options.setRedeployGracePeriod(-1);
+      fail();
+    } catch (IllegalArgumentException e) {
+      // OK
+    }
+    try {
+      options.setRedeployScanPeriod(-1);
+      fail();
+    } catch (IllegalArgumentException e) {
+      // OK
+    }
+    try {
+      options.setRedeployGracePeriod(0);
+      fail();
+    } catch (IllegalArgumentException e) {
+      // OK
+    }
+    try {
+      options.setRedeployScanPeriod(0);
+      fail();
+    } catch (IllegalArgumentException e) {
+      // OK
+    }
   }
 
   @Test
   public void testCopyOptions() {
     DeploymentOptions options = new DeploymentOptions();
-    JsonObject config = new JsonObject().putString("foo", "bar");
+    JsonObject config = new JsonObject().put("foo", "bar");
     Random rand = new Random();
     boolean worker = rand.nextBoolean();
     boolean multiThreaded = rand.nextBoolean();
     String isolationGroup = TestUtils.randomAlphaString(100);
     boolean ha = rand.nextBoolean();
+    long gracePeriod = 7236;
+    long scanPeriod = 7812673;
     List<String> cp = Arrays.asList("foo", "bar");
     options.setConfig(config);
     options.setWorker(worker);
     options.setMultiThreaded(multiThreaded);
     options.setIsolationGroup(isolationGroup);
-    options.setHA(ha);
+    options.setHa(ha);
     options.setExtraClasspath(cp);
+    options.setRedeploy(true);
+    options.setRedeployGracePeriod(gracePeriod);
+    options.setRedeployScanPeriod(scanPeriod);
     DeploymentOptions copy = new DeploymentOptions(options);
     assertEquals(worker, copy.isWorker());
     assertEquals(multiThreaded, copy.isMultiThreaded());
     assertEquals(isolationGroup, copy.getIsolationGroup());
     assertNotSame(config, copy.getConfig());
     assertEquals("bar", copy.getConfig().getString("foo"));
-    assertEquals(ha, copy.isHA());
+    assertEquals(ha, copy.isHa());
     assertEquals(cp, copy.getExtraClasspath());
     assertNotSame(cp, copy.getExtraClasspath());
+    assertTrue(options.isRedeploy());
+    assertEquals(gracePeriod, options.getRedeployGracePeriod());
+    assertEquals(scanPeriod, options.getRedeployScanPeriod());
   }
 
   @Test
@@ -119,13 +162,14 @@ public class DeploymentTest extends VertxTestBase {
     assertEquals(def.isWorker(), json.isWorker());
     assertEquals(def.isMultiThreaded(), json.isMultiThreaded());
     assertEquals(def.getIsolationGroup(), json.getIsolationGroup());
-    assertEquals(def.isHA(), json.isHA());
+    assertEquals(def.isHa(), json.isHa());
     assertEquals(def.getExtraClasspath(), json.getExtraClasspath());
+    assertEquals(def.isRedeploy(), json.isRedeploy());
   }
 
   @Test
   public void testJsonOptions() {
-    JsonObject config = new JsonObject().putString("foo", "bar");
+    JsonObject config = new JsonObject().put("foo", "bar");
     Random rand = new Random();
     boolean worker = rand.nextBoolean();
     boolean multiThreaded = rand.nextBoolean();
@@ -133,49 +177,58 @@ public class DeploymentTest extends VertxTestBase {
     boolean ha = rand.nextBoolean();
     List<String> cp = Arrays.asList("foo", "bar");
     JsonObject json = new JsonObject();
-    json.putObject("config", config);
-    json.putBoolean("worker", worker);
-    json.putBoolean("multiThreaded", multiThreaded);
-    json.putString("isolationGroup", isolationGroup);
-    json.putBoolean("ha", ha);
-    json.putArray("extraClasspath", new JsonArray(cp));
-    DeploymentOptions copy = new DeploymentOptions(json);
-    assertEquals(worker, copy.isWorker());
-    assertEquals(multiThreaded, copy.isMultiThreaded());
-    assertEquals(isolationGroup, copy.getIsolationGroup());
-    assertNotSame(config, copy.getConfig());
-    assertEquals("bar", copy.getConfig().getString("foo"));
-    assertEquals(ha, copy.isHA());
-    assertEquals(cp, copy.getExtraClasspath());
-    assertNotSame(cp, copy.getExtraClasspath());
+    json.put("config", config);
+    json.put("worker", worker);
+    json.put("multiThreaded", multiThreaded);
+    json.put("isolationGroup", isolationGroup);
+    json.put("ha", ha);
+    json.put("extraClasspath", new JsonArray(cp));
+    json.put("redeploy", true);
+    json.put("redeployGracePeriod", 1234);
+    json.put("redeployScanPeriod", 4567);
+    DeploymentOptions options = new DeploymentOptions(json);
+    assertEquals(worker, options.isWorker());
+    assertEquals(multiThreaded, options.isMultiThreaded());
+    assertEquals(isolationGroup, options.getIsolationGroup());
+    assertEquals("bar", options.getConfig().getString("foo"));
+    assertEquals(ha, options.isHa());
+    assertEquals(cp, options.getExtraClasspath());
+    assertTrue(options.isRedeploy());
+    assertEquals(1234, options.getRedeployGracePeriod());
+    assertEquals(4567, options.getRedeployScanPeriod());
   }
 
   @Test
   public void testToJson() {
     DeploymentOptions options = new DeploymentOptions();
-    JsonObject config = new JsonObject().putString("foo", "bar");
+    JsonObject config = new JsonObject().put("foo", "bar");
     Random rand = new Random();
     boolean worker = rand.nextBoolean();
     boolean multiThreaded = rand.nextBoolean();
     String isolationGroup = TestUtils.randomAlphaString(100);
     boolean ha = rand.nextBoolean();
+    long gracePeriod = 521445;
+    long scanPeriod = 234234;
     List<String> cp = Arrays.asList("foo", "bar");
     options.setConfig(config);
     options.setWorker(worker);
     options.setMultiThreaded(multiThreaded);
     options.setIsolationGroup(isolationGroup);
-    options.setHA(ha);
+    options.setHa(ha);
     options.setExtraClasspath(cp);
+    options.setRedeploy(true);
+    options.setRedeployGracePeriod(gracePeriod);
+    options.setRedeployScanPeriod(scanPeriod);
     JsonObject json = options.toJson();
     DeploymentOptions copy = new DeploymentOptions(json);
     assertEquals(worker, copy.isWorker());
     assertEquals(multiThreaded, copy.isMultiThreaded());
     assertEquals(isolationGroup, copy.getIsolationGroup());
-    assertNotSame(config, copy.getConfig());
     assertEquals("bar", copy.getConfig().getString("foo"));
-    assertEquals(ha, copy.isHA());
+    assertEquals(ha, copy.isHa());
     assertEquals(cp, copy.getExtraClasspath());
-    assertNotSame(cp, copy.getExtraClasspath());
+    assertEquals(gracePeriod, copy.getRedeployGracePeriod());
+    assertEquals(scanPeriod, copy.getRedeployScanPeriod());
   }
 
   @Test
@@ -507,6 +560,43 @@ public class DeploymentTest extends VertxTestBase {
   }
 
   @Test
+  public void testDeployUndeployMultipleInstancesUsingClassName() throws Exception {
+    int numInstances = 10;
+    DeploymentOptions options = new DeploymentOptions().setInstances(numInstances);
+    AtomicInteger deployCount = new AtomicInteger();
+    AtomicInteger undeployCount = new AtomicInteger();
+    AtomicInteger deployHandlerCount = new AtomicInteger();
+    AtomicInteger undeployHandlerCount = new AtomicInteger();
+    vertx.eventBus().<String>consumer("tvstarted").handler(msg -> {
+      deployCount.incrementAndGet();
+    });
+    vertx.eventBus().<String>consumer("tvstopped").handler(msg -> {
+      undeployCount.incrementAndGet();
+      msg.reply("whatever");
+    });
+    CountDownLatch deployLatch = new CountDownLatch(1);
+    vertx.deployVerticle(TestVerticle2.class.getCanonicalName(), options, onSuccess(depID -> {
+      assertEquals(1, deployHandlerCount.incrementAndGet());
+      deployLatch.countDown();
+    }));
+    awaitLatch(deployLatch);
+    waitUntil(() -> deployCount.get() == numInstances);
+    assertEquals(1, vertx.deployments().size());
+    Deployment deployment = ((VertxInternal) vertx).getDeployment(vertx.deployments().iterator().next());
+    Set<Verticle> verticles = deployment.getVerticles();
+    assertEquals(numInstances, verticles.size());
+    CountDownLatch undeployLatch = new CountDownLatch(1);
+    assertEquals(numInstances, deployCount.get());
+    vertx.undeployVerticle(deployment.deploymentID(), onSuccess(v -> {
+      assertEquals(1, undeployHandlerCount.incrementAndGet());
+      undeployLatch.countDown();
+    }));
+    awaitLatch(undeployLatch);
+    waitUntil(() -> deployCount.get() == numInstances);
+    assertTrue(vertx.deployments().isEmpty());
+  }
+
+  @Test
   public void testDeployClassNotFound1() throws Exception {
     testDeployClassNotFound("iqwjdiqwjdoiqwjdqwij");
   }
@@ -796,7 +886,7 @@ public class DeploymentTest extends VertxTestBase {
       setExtraClasspath(extraClasspath), ar -> {
       assertTrue(ar.succeeded());
       Deployment deployment = ((VertxInternal) vertx).getDeployment(ar.result());
-      Verticle verticle = deployment.getVerticle();
+      Verticle verticle = deployment.getVerticles().iterator().next();
       ClassLoader cl = verticle.getClass().getClassLoader();
       URLClassLoader urlc = (URLClassLoader) cl;
       assertTrue(urlc.getURLs()[0].toString().endsWith(cp1));
@@ -932,8 +1022,8 @@ public class DeploymentTest extends VertxTestBase {
   }
 
   private JsonObject generateJSONObject() {
-    return new JsonObject().putString("foo", "bar").putNumber("blah", 123)
-      .putObject("obj", new JsonObject().putString("quux", "flip"));
+    return new JsonObject().put("foo", "bar").put("blah", 123)
+      .put("obj", new JsonObject().put("quux", "flip"));
   }
 
   public class MyVerticle extends AbstractVerticle {
@@ -1014,3 +1104,4 @@ public class DeploymentTest extends VertxTestBase {
 
 
 }
+

@@ -18,15 +18,18 @@ package io.vertx.test.core;
 
 import io.vertx.core.AsyncResult;
 import io.vertx.core.Handler;
+import io.vertx.core.VertxOptions;
 import io.vertx.core.eventbus.DeliveryOptions;
 import io.vertx.core.eventbus.Message;
 import io.vertx.core.eventbus.MessageCodec;
 import io.vertx.core.eventbus.MessageConsumer;
+import io.vertx.core.impl.VertxInternal;
 import io.vertx.core.spi.cluster.ClusterManager;
 import io.vertx.test.fakecluster.FakeClusterManager;
 import org.junit.Test;
 
 import java.util.Map;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Consumer;
 
@@ -155,212 +158,6 @@ public class ClusteredEventBusTest extends EventBusTestBase {
     vertices[0].eventBus().publish(ADDRESS1, val);
     await();
   }
-  
-  @Override
-  protected <T> void testForward(T val) {
-    startNodes(2);
-    
-    vertices[0].eventBus().<T>consumer(ADDRESS1).handler(msg -> {
-        assertEquals(val, msg.body());
-        msg.forward(ADDRESS2);
-    });
-
-    vertices[1].eventBus().<T>consumer(ADDRESS2).handler(msg -> {
-      assertEquals(val, msg.body());        
-      assertTrue(msg.isForward());
-      testComplete();
-    });
-
-    vertices[0].eventBus().send(ADDRESS1, val);
-    await();
-  
-  }
-  
-  @Override
-  protected <T> void testForwardWithHeaders(T val, DeliveryOptions options) {
-
-    startNodes(2);
-    int expectedHeaders = options.getHeaders().size();
-    final String FIRST_KEY = "first";
-    final String SEC_KEY = "second";
-
-    vertices[0].eventBus().<T> consumer(ADDRESS1).handler(msg -> {
-      assertEquals(val, msg.body());
-      if (!msg.isForward()) {
-        msg.forward(ADDRESS2);
-      } else {
-        assertTrue(msg.isForward());
-        assertTrue(msg.headers().size() == expectedHeaders);
-        assertEquals(msg.headers().get(FIRST_KEY), "first");
-        assertEquals(msg.headers().get(SEC_KEY), "second");
-        testComplete();
-      }
-
-    });
-
-    vertices[1].eventBus().<T> consumer(ADDRESS2).handler(msg -> {
-      assertEquals(val, msg.body());
-      assertTrue(msg.isForward());
-      msg.forward(ADDRESS1);
-    });
-
-    vertices[0].eventBus().send(ADDRESS1, val, options);
-    await();
-
-  }
-  
-  @Test
-  public <T> void testForwardNoReadBodyOrHeaders(){
-    startNodes(2);
-    
-    final String body = "Test Body";
-    final String FIRST_KEY = "first";
-    final String SEC_KEY = "second";
-
-    vertices[0].eventBus().<T> consumer(ADDRESS1).handler(msg -> {
-
-      if (!msg.isForward()) {
-        msg.forward(ADDRESS2);
-      } else {
-        assertTrue(msg.isForward());
-        assertEquals(msg.headers().get(FIRST_KEY), "first");
-        assertEquals(msg.headers().get(SEC_KEY), "second");
-        testComplete();
-      }
-
-    });
-
-    vertices[1].eventBus().<T> consumer(ADDRESS2).handler(msg -> {
-      assertTrue(msg.isForward());
-      assertEquals(body, msg.body());
-      msg.forward(ADDRESS1);
-    });
-
-    DeliveryOptions options = new DeliveryOptions();
-    options.addHeader("first", "first");
-    options.addHeader("second", "second");    
-    vertices[0].eventBus().send(ADDRESS1, body, options);
-    await();
-
-  }
-  
-  @Test
-  public <T> void testForwardReadBodyNoHeader(){
-    startNodes(2);
-    
-    final String body = "Test Body";
-    final String FIRST_KEY = "first";
-    final String SEC_KEY = "second";
-
-    vertices[0].eventBus().<T> consumer(ADDRESS1).handler(msg -> {
-
-      if (!msg.isForward()) {
-        assertEquals(body, msg.body());
-        msg.forward(ADDRESS2);
-      } else {
-        assertTrue(msg.isForward());
-        assertEquals(msg.headers().get(FIRST_KEY), "first");
-        assertEquals(msg.headers().get(SEC_KEY), "second");
-        testComplete();
-      }
-
-    });
-
-    vertices[1].eventBus().<T> consumer(ADDRESS2).handler(msg -> {
-      assertTrue(msg.isForward());
-      assertEquals(body, msg.body());
-      msg.forward(ADDRESS1);
-    });
-
-    DeliveryOptions options = new DeliveryOptions();
-    options.addHeader("first", "first");
-    options.addHeader("second", "second");    
-    vertices[0].eventBus().send(ADDRESS1, body, options);
-    await();
-
-  }
-  
-  @Test
-  public <T> void testForwardReadHeadersNoBody(){
-    startNodes(2);
-    
-    final String body = "Test Body";
-    final String FIRST_KEY = "first";
-    final String SEC_KEY = "second";
-
-    vertices[0].eventBus().<T> consumer(ADDRESS1).handler(msg -> {
-
-      if (!msg.isForward()) {
-        assertEquals(msg.headers().get(FIRST_KEY), "first");
-        assertEquals(msg.headers().get(SEC_KEY), "second");
-        msg.forward(ADDRESS2);
-
-      } else {
-        assertTrue(msg.isForward());
-        assertEquals(msg.headers().get(FIRST_KEY), "first");
-        assertEquals(msg.headers().get(SEC_KEY), "second");
-        testComplete();
-      }
-
-    });
-
-    vertices[1].eventBus().<T> consumer(ADDRESS2).handler(msg -> {
-      assertTrue(msg.isForward());
-      assertEquals(body, msg.body());
-      assertEquals(msg.headers().get(FIRST_KEY), "first");
-      assertEquals(msg.headers().get(SEC_KEY), "second");
-      msg.forward(ADDRESS1);
-    });
-
-    DeliveryOptions options = new DeliveryOptions();
-    options.addHeader("first", "first");
-    options.addHeader("second", "second");    
-    vertices[0].eventBus().send(ADDRESS1, body, options);
-    await();
-
-  }
- 
-  @Test
-  public <T> void testForwardModifyHeaders(){
-    startNodes(2);
-    
-    final String body = "Test Body";
-    final String FIRST_KEY = "first";
-    final String SEC_KEY = "second";
-
-    vertices[0].eventBus().<T> consumer(ADDRESS1).handler(msg -> {
-
-      if (!msg.isForward()) {
-        msg.headers().remove("first");
-        msg.headers().remove("second");
-        msg.headers().add("third", "third");
-        msg.headers().add("fourth", "fourth");
-        msg.forward(ADDRESS2);
-
-      } else {
-        testComplete();
-      }
-
-    });
-
-    vertices[1].eventBus().<T> consumer(ADDRESS2).handler(msg -> {
-      assertTrue(msg.isForward());
-      assertEquals(body, msg.body());
-      assertNull(msg.headers().get(FIRST_KEY));
-      assertNull(msg.headers().get(SEC_KEY));      
-      assertEquals(msg.headers().get("third"), "third");
-      assertEquals(msg.headers().get("fourth"), "fourth");
-
-      msg.forward(ADDRESS1);
-    });
-
-    DeliveryOptions options = new DeliveryOptions();
-    options.addHeader("first", "first");
-    options.addHeader("second", "second");    
-    vertices[0].eventBus().send(ADDRESS1, body, options);
-    await();
-
-  }
 
   @Test
   public void testLocalHandlerNotReceive() throws Exception {
@@ -373,7 +170,6 @@ public class ClusteredEventBusTest extends EventBusTestBase {
     await();
   }
 
-  
   @Test
   public void testDecoderSendAsymmetric() throws Exception {
     startNodes(2);
@@ -458,4 +254,52 @@ public class ClusteredEventBusTest extends EventBusTestBase {
     testReply(pojo, pojo, null, null);
   }
 
+  // Make sure ping/pong works ok
+  @Test
+  public void testClusteredPong() throws Exception {
+    startNodes(2, new VertxOptions().setClusterPingInterval(500).setClusterPingReplyInterval(500));
+    AtomicBoolean sending = new AtomicBoolean();
+    MessageConsumer<String> consumer = vertices[0].eventBus().<String>consumer("foobar").handler(msg -> {
+      if (!sending.get()) {
+        sending.set(true);
+        vertx.setTimer(4000, id -> {
+          vertices[1].eventBus().send("foobar", "whatever2");
+        });
+      } else {
+        testComplete();
+      }
+    });
+    consumer.completionHandler(ar -> {
+      assertTrue(ar.succeeded());
+      vertices[1].eventBus().send("foobar", "whatever");
+    });
+    await();
+  }
+
+  // Make sure connection times out correctly on no pong
+  @Test
+  public void testConnectionTimesOutNoPong() throws Exception {
+    // Set an unreasonably quick reply time so it's bound to timeout
+    startNodes(2, new VertxOptions().setClusterPingInterval(1).setClusterPingReplyInterval(1));
+    VertxInternal vertxI = (VertxInternal)vertices[0];
+    vertxI.simulateEventBusUnresponsive();
+    AtomicBoolean sending = new AtomicBoolean();
+    MessageConsumer<String> consumer = vertices[0].eventBus().<String>consumer("foobar").handler(msg -> {
+      if (!sending.get()) {
+        sending.set(true);
+        vertx.setTimer(2000, id -> {
+          vertices[1].eventBus().send("foobar", "whatever2");
+        });
+      } else {
+        fail("should not receive message");
+      }
+    });
+    consumer.completionHandler(ar -> {
+      assertTrue(ar.succeeded());
+      vertices[1].eventBus().send("foobar", "whatever");
+    });
+    // wait a while for the message to get there (which it never will)
+    vertx.setTimer(4000, id -> testComplete());
+    await();
+  }
 }

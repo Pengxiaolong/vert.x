@@ -41,7 +41,6 @@ import io.vertx.core.impl.WorkerContext;
 import io.vertx.core.streams.Pump;
 import io.vertx.core.streams.ReadStream;
 import io.vertx.core.streams.WriteStream;
-
 import org.junit.Test;
 
 import java.util.Arrays;
@@ -56,6 +55,10 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.BiFunction;
 import java.util.function.Consumer;
+
+import static io.vertx.test.core.TestUtils.assertIllegalArgumentException;
+import static io.vertx.test.core.TestUtils.assertIllegalStateException;
+import static io.vertx.test.core.TestUtils.assertNullPointerException;
 
 /**
  * @author <a href="http://tfox.org">Tim Fox</a>
@@ -79,6 +82,40 @@ public class LocalEventBusTest extends EventBusTestBase {
     });
     assertTrue(latch.await(30, TimeUnit.SECONDS));
     super.tearDown();
+  }
+
+  @Test
+  public void testDeliveryOptions() {
+    DeliveryOptions options = new DeliveryOptions();
+
+    assertIllegalArgumentException(() -> options.setSendTimeout(0));
+    assertIllegalArgumentException(() -> options.setSendTimeout(-1));
+    assertNullPointerException(() -> options.addHeader(null, ""));
+    assertNullPointerException(() -> options.addHeader("", null));
+  }
+
+  @Test
+  public void testArgumentValidation() throws Exception {
+    assertNullPointerException(() -> eb.send(null, ""));
+    assertNullPointerException(() -> eb.send(null, "", handler -> {}));
+    assertNullPointerException(() -> eb.send(null, "", new DeliveryOptions()));
+    assertNullPointerException(() -> eb.send("", "", (DeliveryOptions) null));
+    assertNullPointerException(() -> eb.send(null, "", new DeliveryOptions(), handler -> {}));
+    assertNullPointerException(() -> eb.send("", "", null, handler -> {}));
+    assertNullPointerException(() -> eb.publish(null, ""));
+    assertNullPointerException(() -> eb.publish(null, "", new DeliveryOptions()));
+    assertNullPointerException(() -> eb.publish("", "", null));
+    assertNullPointerException(() -> eb.consumer(null));
+    assertNullPointerException(() -> eb.localConsumer(null));
+    assertNullPointerException(() -> eb.sender(null));
+    assertNullPointerException(() -> eb.sender(null, new DeliveryOptions()));
+    assertNullPointerException(() -> eb.publisher("", null));
+    assertNullPointerException(() -> eb.publisher(null, new DeliveryOptions()));
+    assertNullPointerException(() -> eb.registerCodec(null));
+    assertNullPointerException(() -> eb.unregisterCodec(null));
+    assertNullPointerException(() -> eb.registerDefaultCodec(null, new MyPOJOEncoder1()));
+    assertNullPointerException(() -> eb.registerDefaultCodec(Object.class, null));
+    assertNullPointerException(() -> eb.unregisterDefaultCodec(null));
   }
 
   @Test
@@ -792,22 +829,12 @@ public class LocalEventBusTest extends EventBusTestBase {
 
   @Test
   public void testNoRegisteredDefaultDecoder() throws Exception {
-    try {
-      vertx.eventBus().send(ADDRESS1, new MyPOJO("foo"));
-      fail("Should throw exception");
-    } catch (IllegalArgumentException e) {
-      // OK
-    }
+    assertIllegalArgumentException(() -> vertx.eventBus().send(ADDRESS1, new MyPOJO("foo")));
   }
 
   @Test
   public void testRegisterDefaultSystemDecoder() throws Exception {
-    try {
-      vertx.eventBus().registerDefaultCodec(MyPOJO.class, new MySystemDecoder());
-      fail("Should throw exception");
-    } catch (IllegalArgumentException e) {
-      // OK
-    }
+    assertIllegalArgumentException(() -> vertx.eventBus().registerDefaultCodec(MyPOJO.class, new MySystemDecoder()));
   }
 
   @Test
@@ -815,34 +842,19 @@ public class LocalEventBusTest extends EventBusTestBase {
     MessageCodec codec = new MyPOJOEncoder1();
     vertx.eventBus().registerDefaultCodec(MyPOJO.class, codec);
     vertx.eventBus().unregisterDefaultCodec(MyPOJO.class);
-    try {
-      vertx.eventBus().send(ADDRESS1, new MyPOJO("foo"));
-      fail("Should throw exception");
-    } catch (IllegalArgumentException e) {
-      // OK
-    }
+    assertIllegalArgumentException(() -> vertx.eventBus().send(ADDRESS1, new MyPOJO("foo")));
   }
 
   @Test
   public void testRegisterDefaultTwice() throws Exception {
     MessageCodec codec = new MyPOJOEncoder1();
     vertx.eventBus().registerDefaultCodec(MyPOJO.class, codec);
-    try {
-      vertx.eventBus().registerDefaultCodec(MyPOJO.class, codec);
-      fail("Should throw exception");
-    } catch (IllegalStateException e) {
-      // OK
-    }
+    assertIllegalStateException(() -> vertx.eventBus().registerDefaultCodec(MyPOJO.class, codec));
   }
 
   @Test
   public void testDefaultCodecNullName() throws Exception {
-    try {
-      vertx.eventBus().registerDefaultCodec(String.class, new NullNameCodec());
-      fail("Should throw exception");
-    } catch (NullPointerException e) {
-      // OK
-    }
+    assertNullPointerException(() -> vertx.eventBus().registerDefaultCodec(String.class, new NullNameCodec()));
   }
 
 
@@ -1202,191 +1214,5 @@ public class LocalEventBusTest extends EventBusTestBase {
     Pump.pump(consumer, producer);
     producer.write(str);
   }
-
-  @Override
-  protected <T> void testForward(T val) {
-
-    eb.<T>consumer(ADDRESS1).handler((Message<T> msg) -> {
-        assertEquals(val, msg.body());
-        msg.forward(ADDRESS2);
-
-    });
-
-    eb.<T>consumer(ADDRESS2).handler((Message<T> msg) -> {
-      
-        assertEquals(val, msg.body());
-        testComplete();     
-    });
-
-    eb.send(ADDRESS1, val);
-    await();
-  }
-
-  @Override
-  protected <T> void testForwardWithHeaders(T val, DeliveryOptions options) {
-
-    eb.<T>consumer(ADDRESS1).handler((Message<T> msg) -> {
-        assertEquals(val, msg.body());
-        msg.forward(ADDRESS2);
-    });
-
-    eb.<T>consumer(ADDRESS2).handler((Message<T> msg) -> {
-
-        assertEquals(val, msg.body());
-        testComplete();
-    });
-
-    eb.send(ADDRESS1, val, options);
-    await();
-    
-  }
-
-  @Test
-  public <T> void testForwardNoReadBodyOrHeaders(){
-    
-    final String body = "Test Body";
-    final String FIRST_KEY = "first";
-    final String SEC_KEY = "second";
-
-    eb.<T> consumer(ADDRESS1).handler((Message<T> msg) -> {
-
-      if (!msg.isForward()) {
-        msg.forward(ADDRESS2);
-      } else {
-        assertTrue(msg.isForward());
-        assertEquals(msg.headers().get(FIRST_KEY), "first");
-        assertEquals(msg.headers().get(SEC_KEY), "second");
-        testComplete();
-      }
-
-    });
-
-    eb.<T> consumer(ADDRESS2).handler((Message<T> msg) -> {
-      assertTrue(msg.isForward());
-      assertEquals(body, msg.body());
-      msg.forward(ADDRESS1);
-    });
-
-    DeliveryOptions options = new DeliveryOptions();
-    options.addHeader("first", "first");
-    options.addHeader("second", "second");    
-    eb.send(ADDRESS1, body, options);
-    await();
-
-  }
-
-  @Test
-  public <T> void testForwardReadBodyNoHeader(){
-    
-    final String body = "Test Body";
-    final String FIRST_KEY = "first";
-    final String SEC_KEY = "second";
-
-    eb.<T> consumer(ADDRESS1).handler((Message<T> msg) -> {
-
-      if (!msg.isForward()) {
-        assertEquals(body, msg.body());
-        msg.forward(ADDRESS2);
-      } else {
-        assertTrue(msg.isForward());
-        assertEquals(msg.headers().get(FIRST_KEY), "first");
-        assertEquals(msg.headers().get(SEC_KEY), "second");
-        testComplete();
-      }
-
-    });
-
-    eb.<T> consumer(ADDRESS2).handler((Message<T> msg) -> {
-      assertTrue(msg.isForward());
-      assertEquals(body, msg.body());
-      msg.forward(ADDRESS1);
-    });
-
-    DeliveryOptions options = new DeliveryOptions();
-    options.addHeader("first", "first");
-    options.addHeader("second", "second");    
-    eb.send(ADDRESS1, body, options);
-    await();
-
-  }
-
-  @Test
-  public <T> void testForwardReadHeadersNoBody(){
-        
-    final String body = "Test Body";
-    final String FIRST_KEY = "first";
-    final String SEC_KEY = "second";
-
-    eb.<T> consumer(ADDRESS1).handler((Message<T> msg) -> {
-
-      if (!msg.isForward()) {
-        assertEquals(msg.headers().get(FIRST_KEY), "first");
-        assertEquals(msg.headers().get(SEC_KEY), "second");
-        msg.forward(ADDRESS2);
-
-      } else {
-        assertTrue(msg.isForward());
-        assertEquals(msg.headers().get(FIRST_KEY), "first");
-        assertEquals(msg.headers().get(SEC_KEY), "second");
-        testComplete();
-      }
-
-    });
-
-    eb.<T> consumer(ADDRESS2).handler((Message<T> msg) -> {
-      assertTrue(msg.isForward());
-      assertEquals(body, msg.body());
-      assertEquals(msg.headers().get(FIRST_KEY), "first");
-      assertEquals(msg.headers().get(SEC_KEY), "second");
-      msg.forward(ADDRESS1);
-    });
-
-    DeliveryOptions options = new DeliveryOptions();
-    options.addHeader("first", "first");
-    options.addHeader("second", "second");    
-    eb.send(ADDRESS1, body, options);
-    await();
-
-  }
-
-  @Test
-  public <T> void testForwardModifyHeaders(){
-        
-    final String body = "Test Body";
-    final String FIRST_KEY = "first";
-    final String SEC_KEY = "second";
-
-    eb.<T> consumer(ADDRESS1).handler((Message<T> msg) -> {
-
-      if (!msg.isForward()) {
-        msg.headers().remove("first");
-        msg.headers().remove("second");
-        msg.headers().add("third", "third");
-        msg.headers().add("fourth", "fourth");
-        msg.forward(ADDRESS2);
-
-      } else {
-        testComplete();
-      }
-
-    });
-
-    eb.<T> consumer(ADDRESS2).handler((Message<T> msg) -> {
-      assertTrue(msg.isForward());
-      assertEquals(body, msg.body());
-      assertNull(msg.headers().get(FIRST_KEY));
-      assertNull(msg.headers().get(SEC_KEY));      
-      assertEquals(msg.headers().get("third"), "third");
-      assertEquals(msg.headers().get("fourth"), "fourth");
-
-      msg.forward(ADDRESS1);
-    });
-
-    DeliveryOptions options = new DeliveryOptions();
-    options.addHeader("first", "first");
-    options.addHeader("second", "second");    
-    eb.send(ADDRESS1, body, options);
-    await();
-
-  }
 }
+

@@ -19,12 +19,14 @@ package io.vertx.test.core;
 import io.vertx.core.Vertx;
 import io.vertx.core.json.JsonArray;
 import io.vertx.core.json.JsonObject;
-import io.vertx.core.shareddata.AsyncMap;
 import io.vertx.core.spi.cluster.ClusterManager;
 import io.vertx.test.fakecluster.FakeClusterManager;
 import org.junit.Test;
 
 import java.io.Serializable;
+
+import static io.vertx.test.core.TestUtils.assertIllegalArgumentException;
+import static io.vertx.test.core.TestUtils.assertNullPointerException;
 
 /**
  * @author <a href="http://tfox.org">Tim Fox</a>
@@ -96,7 +98,7 @@ public class ClusterWideMapTest extends VertxTestBase {
 
   @Test
   public void testMapPutGetJsonObject() {
-    testMapPutGet(new JsonObject().putString("foo", "bar"), new JsonObject().putString("uihwqduh", "qiwiojw"));
+    testMapPutGet(new JsonObject().put("foo", "bar"), new JsonObject().put("uihwqduh", "qiwiojw"));
   }
 
   @Test
@@ -156,7 +158,7 @@ public class ClusterWideMapTest extends VertxTestBase {
 
   @Test
   public void testMapPutIfAbsentGetJsonObject() {
-    testMapPutIfAbsentGet(new JsonObject().putString("foo", "bar"), new JsonObject().putString("uihwqduh", "qiwiojw"));
+    testMapPutIfAbsentGet(new JsonObject().put("foo", "bar"), new JsonObject().put("uihwqduh", "qiwiojw"));
   }
 
   @Test
@@ -218,7 +220,7 @@ public class ClusterWideMapTest extends VertxTestBase {
 
   @Test
   public void testMapRemoveJsonObject() {
-    testMapRemove(new JsonObject().putString("foo", "bar"), new JsonObject().putString("uihwqduh", "qiwiojw"));
+    testMapRemove(new JsonObject().put("foo", "bar"), new JsonObject().put("uihwqduh", "qiwiojw"));
   }
 
   @Test
@@ -278,8 +280,8 @@ public class ClusterWideMapTest extends VertxTestBase {
 
   @Test
   public void testMapRemoveIfPresentJsonObject() {
-    testMapRemoveIfPresent(new JsonObject().putString("foo", "bar"), new JsonObject().putString("uihwqduh", "qiwiojw"),
-                           new JsonObject().putString("regerg", "wfwef"));
+    testMapRemoveIfPresent(new JsonObject().put("foo", "bar"), new JsonObject().put("uihwqduh", "qiwiojw"),
+                           new JsonObject().put("regerg", "wfwef"));
   }
 
   @Test
@@ -340,8 +342,8 @@ public class ClusterWideMapTest extends VertxTestBase {
 
   @Test
   public void testMapReplaceJsonObject() {
-    testMapReplace(new JsonObject().putString("foo", "bar"), new JsonObject().putString("uihwqduh", "qiwiojw"),
-      new JsonObject().putString("regerg", "wfwef"));
+    testMapReplace(new JsonObject().put("foo", "bar"), new JsonObject().put("uihwqduh", "qiwiojw"),
+      new JsonObject().put("regerg", "wfwef"));
   }
 
   @Test
@@ -402,8 +404,8 @@ public class ClusterWideMapTest extends VertxTestBase {
 
   @Test
   public void testMapReplaceIfPresentJsonObject() {
-    testMapReplaceIfPresent(new JsonObject().putString("foo", "bar"), new JsonObject().putString("uihwqduh", "qiwiojw"),
-      new JsonObject().putString("regerg", "wfwef"));
+    testMapReplaceIfPresent(new JsonObject().put("foo", "bar"), new JsonObject().put("uihwqduh", "qiwiojw"),
+      new JsonObject().put("regerg", "wfwef"));
   }
 
   @Test
@@ -418,280 +420,209 @@ public class ClusterWideMapTest extends VertxTestBase {
   }
 
   @Test
+  public void testGetMapWithNullName() throws Exception {
+    assertNullPointerException(() -> getVertx().sharedData().<String, String>getClusterWideMap(null, ar -> {}));
+  }
+
+  @Test
+  public void testGetMapWithNullResultHandler() throws Exception {
+    assertNullPointerException(() -> getVertx().sharedData().<String, String>getClusterWideMap("foo", null));
+  }
+
+  @Test
   public void testPutNullKey() {
-    getVertx().sharedData().<String, String>getClusterWideMap("foo", ar -> {
-      assertTrue(ar.succeeded());
-      AsyncMap<String, String> map = ar.result();
-      try {
-        map.put(null, "foo", ar2 -> {});
-        fail("Should throw Exception");
-      } catch (IllegalArgumentException e) {
-        // OK
-        testComplete();
-      }
-    });
+    getVertx().sharedData().<String, String>getClusterWideMap("foo", onSuccess(map -> {
+      assertIllegalArgumentException(() -> map.put(null, "foo", ar2 -> {}));
+      testComplete();
+    }));
     await();
   }
 
   @Test
   public void testPutNullValue() {
-    getVertx().sharedData().<String, String>getClusterWideMap("foo", ar -> {
-      assertTrue(ar.succeeded());
-      AsyncMap<String, String> map = ar.result();
-      try {
-        map.put("foo", null, ar2 -> {});
-        fail("Should throw Exception");
-      } catch (IllegalArgumentException e) {
-        // OK
-        testComplete();
-      }
-    });
+    getVertx().sharedData().<String, String>getClusterWideMap("foo", onSuccess(map -> {
+      assertIllegalArgumentException(() -> map.put("foo", null, ar2 -> {}));
+      testComplete();
+    }));
     await();
   }
 
   @Test
   public void testPutInvalidKey() {
-    getVertx().sharedData().<SomeObject, String>getClusterWideMap("foo", ar -> {
-      assertTrue(ar.succeeded());
-      AsyncMap<SomeObject, String> map = ar.result();
-      try {
-        map.put(new SomeObject(), "foo", ar2 -> {});
-        fail("Should throw Exception");
-      } catch (IllegalArgumentException e) {
-        // OK
-        testComplete();
-      }
-    });
+    getVertx().sharedData().<SomeObject, String>getClusterWideMap("foo", onSuccess(map -> {
+      assertIllegalArgumentException(() -> map.put(new SomeObject(), "foo", ar2 -> {}));
+      testComplete();
+    }));
     await();
   }
 
   @Test
   public void testPutInvalidValue() {
-    getVertx().sharedData().<String, SomeObject>getClusterWideMap("foo", ar -> {
-      assertTrue(ar.succeeded());
-      AsyncMap<String, SomeObject> map = ar.result();
-      try {
-        map.put("foo", new SomeObject(), ar2 -> {});
-        fail("Should throw Exception");
-      } catch (IllegalArgumentException e) {
-        // OK
-        testComplete();
-      }
-    });
+    getVertx().sharedData().<String, SomeObject>getClusterWideMap("foo", onSuccess(map -> {
+      assertIllegalArgumentException(() -> map.put("foo", new SomeObject(), ar2 -> {}));
+      testComplete();
+    }));
     await();
   }
 
   @Test
   public void testPutIfAbsentInvalidKey() {
-    getVertx().sharedData().<SomeObject, String>getClusterWideMap("foo", ar -> {
-      assertTrue(ar.succeeded());
-      AsyncMap<SomeObject, String> map = ar.result();
-      try {
-        map.putIfAbsent(new SomeObject(), "foo", ar2 -> {
-        });
-        fail("Should throw Exception");
-      } catch (IllegalArgumentException e) {
-        // OK
-        testComplete();
-      }
-    });
+    getVertx().sharedData().<SomeObject, String>getClusterWideMap("foo", onSuccess(map -> {
+      assertIllegalArgumentException(() -> map.putIfAbsent(new SomeObject(), "foo", ar2 -> {}));
+      testComplete();
+    }));
     await();
   }
 
   @Test
   public void testPutIfAbsentInvalidValue() {
-    getVertx().sharedData().<String, SomeObject>getClusterWideMap("foo", ar -> {
-      assertTrue(ar.succeeded());
-      AsyncMap<String, SomeObject> map = ar.result();
-      try {
-        map.putIfAbsent("foo", new SomeObject(), ar2 -> {
-        });
-        fail("Should throw Exception");
-      } catch (IllegalArgumentException e) {
-        // OK
-        testComplete();
-      }
-    });
+    getVertx().sharedData().<String, SomeObject>getClusterWideMap("foo", onSuccess(map -> {
+      assertIllegalArgumentException(() -> map.putIfAbsent("foo", new SomeObject(), ar2 -> {}));
+      testComplete();
+    }));
     await();
   }
 
   @Test
   public void testMultipleMaps() {
-    getVertx().sharedData().<String, String>getClusterWideMap("foo", ar -> {
-      assertTrue(ar.succeeded());
-      AsyncMap<String, String> map = ar.result();
-      map.put("foo", "bar", ar2 -> {
-        assertTrue(ar2.succeeded());
-        getVertx().sharedData().<String, String>getClusterWideMap("bar", ar3 -> {
-          AsyncMap<String, String> map2 = ar3.result();
-          map2.get("foo", ar4 -> {
-            assertNull(ar4.result());
+    getVertx().sharedData().<String, String>getClusterWideMap("foo", onSuccess(map -> {
+      map.put("foo", "bar", onSuccess(v -> {
+        getVertx().sharedData().<String, String>getClusterWideMap("bar", onSuccess(map2 -> {
+          map2.get("foo", onSuccess(res -> {
+            assertNull(res);
             testComplete();
-          });
-        });
-      });
-    });
+          }));
+        }));
+      }));
+    }));
     await();
   }
 
   @Test
   public void testClear() {
-    getVertx().sharedData().<String, String>getClusterWideMap("foo", ar -> {
-      assertTrue(ar.succeeded());
-      AsyncMap<String, String> map = ar.result();
-      map.put("foo", "bar", ar2 -> {
-        assertTrue(ar2.succeeded());
-        getVertx().sharedData().<String, String>getClusterWideMap("foo", ar3 -> {
-          AsyncMap<String, String> map2 = ar3.result();
-          map2.clear(ar4 -> {
-            assertTrue(ar4.succeeded());
-            map.get("foo", ar5 -> {
-              assertTrue(ar5.succeeded());
-              assertNull(ar5.result());
+    getVertx().sharedData().<String, String>getClusterWideMap("foo", onSuccess(map -> {
+      map.put("foo", "bar", onSuccess(v -> {
+        getVertx().sharedData().<String, String>getClusterWideMap("foo", onSuccess(map2 -> {
+          map2.clear(onSuccess(v2 -> {
+            map.get("foo", onSuccess(res -> {
+              assertNull(res);
               testComplete();
-            });
-          });
-        });
-      });
-    });
+            }));
+          }));
+        }));
+      }));
+    }));
     await();
   }
 
   private <K, V> void testMapPutGet(K k, V v) {
-    getVertx().sharedData().<K, V>getClusterWideMap("foo", ar -> {
-      assertTrue(ar.succeeded());
-      AsyncMap<K, V> map = ar.result();
-      map.put(k, v, ar2 -> {
-        assertTrue(ar2.succeeded());
-        getVertx().sharedData().<K, V>getClusterWideMap("foo", ar3 -> {
-          AsyncMap<K, V> map2 = ar3.result();
-          map2.get(k, ar4 -> {
-            assertEquals(v, ar4.result());
+    getVertx().sharedData().<K, V>getClusterWideMap("foo", onSuccess(map -> {
+      map.put(k, v, onSuccess(vd -> {
+        getVertx().sharedData().<K, V>getClusterWideMap("foo", onSuccess(map2 -> {
+          map2.get(k, onSuccess(res -> {
+            assertEquals(v, res);
             testComplete();
-          });
-        });
-      });
-    });
+          }));
+        }));
+      }));
+    }));
     await();
   }
 
   private <K, V> void testMapPutIfAbsentGet(K k, V v) {
-    getVertx().sharedData().<K, V>getClusterWideMap("foo", ar -> {
-      assertTrue(ar.succeeded());
-      AsyncMap<K, V> map = ar.result();
-      map.putIfAbsent(k, v, ar2 -> {
-        assertTrue(ar2.succeeded());
-        assertNull(ar2.result());
-        getVertx().sharedData().<K, V>getClusterWideMap("foo", ar3 -> {
-          AsyncMap<K, V> map2 = ar.result();
-          map2.get(k, ar4 -> {
-            assertEquals(v, ar4.result());
-            map.putIfAbsent(k, v, ar5 -> {
-              assertTrue(ar5.succeeded()); 
-              assertEquals(v, ar5.result());
+    getVertx().sharedData().<K, V>getClusterWideMap("foo", onSuccess(map -> {
+      map.putIfAbsent(k, v, onSuccess(res -> {
+        assertNull(res);
+        getVertx().sharedData().<K, V>getClusterWideMap("foo", onSuccess(map2 -> {
+          map2.get(k, onSuccess(res2 -> {
+            assertEquals(v, res2);
+            map.putIfAbsent(k, v, onSuccess(res3 -> {
+              assertEquals(v, res3);
               testComplete();
-            });                                    
-          });
-        });
-      });
-    });
+            }));
+          }));
+        }));
+      }));
+    }));
     await();
   }
 
   private <K, V> void testMapRemove(K k, V v) {
-    getVertx().sharedData().<K, V>getClusterWideMap("foo", ar -> {
-      assertTrue(ar.succeeded());
-      AsyncMap<K, V> map = ar.result();
-      map.put(k, v, ar2 -> {
-        assertTrue(ar2.succeeded());
-        assertNull(ar2.result());
-        getVertx().sharedData().<K, V>getClusterWideMap("foo", ar3 -> {
-          AsyncMap<K, V> map2 = ar.result();
-          map2.remove(k, ar4 -> {
-            assertEquals(v, ar4.result());
+    getVertx().sharedData().<K, V>getClusterWideMap("foo", onSuccess(map -> {
+      map.put(k, v, onSuccess(res -> {
+        assertNull(res);
+        getVertx().sharedData().<K, V>getClusterWideMap("foo", onSuccess(map2 -> {
+          map2.remove(k, onSuccess(res2 -> {
+            assertEquals(v, res2);
             testComplete();
-          });
-        });
-      });
-    });
+          }));
+        }));
+      }));
+    }));
     await();
   }
 
   private <K, V> void testMapRemoveIfPresent(K k, V v, V other) {
-    getVertx().sharedData().<K, V>getClusterWideMap("foo", ar -> {
-      assertTrue(ar.succeeded());
-      AsyncMap<K, V> map = ar.result();
-      map.put(k, v, ar2 -> {
-        assertTrue(ar2.succeeded());
-        assertNull(ar2.result());
-        getVertx().sharedData().<K, V>getClusterWideMap("foo", ar3 -> {
-          AsyncMap<K, V> map2 = ar.result();
-          map2.removeIfPresent(k, other, ar4 -> {
-            assertFalse(ar4.result());
-            map2.removeIfPresent(k, v, ar5 -> {
-              assertTrue(ar5.result());
+    getVertx().sharedData().<K, V>getClusterWideMap("foo", onSuccess(map -> {
+      map.put(k, v, onSuccess(res -> {
+        assertNull(res);
+        getVertx().sharedData().<K, V>getClusterWideMap("foo", onSuccess(map2 -> {
+          map2.removeIfPresent(k, other, onSuccess(res2 -> {
+            assertFalse(res2);
+            map2.removeIfPresent(k, v, onSuccess(res3 -> {
+              assertTrue(res3);
               testComplete();
-            });
-          });
-        });
-      });
-    });
+            }));
+          }));
+        }));
+      }));
+    }));
     await();
   }
 
   private <K, V> void testMapReplace(K k, V v, V other) {
-    getVertx().sharedData().<K, V>getClusterWideMap("foo", ar -> {
-      assertTrue(ar.succeeded());
-      AsyncMap<K, V> map = ar.result();
-      map.put(k, v, ar2 -> {
-        assertTrue(ar2.succeeded());
-        assertNull(ar2.result());
-        getVertx().sharedData().<K, V>getClusterWideMap("foo", ar3 -> {
-          AsyncMap<K, V> map2 = ar.result();
-          map2.replace(k, other, ar4 -> {
-            assertEquals(v, ar4.result());
-            map2.get(k, ar5 -> {
-              assertEquals(other, ar5.result());
-              map2.remove(k, ar6 -> {
-                assertTrue(ar6.succeeded());
-                map2.replace(k, other, ar7 -> {
-                  assertNull(ar7.result());
-                  map2.get(k, ar8 -> {
-                    assertNull(ar8.result());
+    getVertx().sharedData().<K, V>getClusterWideMap("foo", onSuccess(map -> {
+      map.put(k, v, onSuccess(res -> {
+        assertNull(res);
+        getVertx().sharedData().<K, V>getClusterWideMap("foo", onSuccess(map2 -> {
+          map2.replace(k, other, onSuccess(res2 -> {
+            assertEquals(v, res2);
+            map2.get(k, onSuccess(res3 -> {
+              assertEquals(other, res3);
+              map2.remove(k, onSuccess(res4 -> {
+                map2.replace(k, other, onSuccess(res5 -> {
+                  assertNull(res5);
+                  map2.get(k, onSuccess(res6 -> {
+                    assertNull(res6);
                     testComplete();
-                  });
-                });
-              });
-            });
-          });
-        });
-      });
-    });
+                  }));
+                }));
+              }));
+            }));
+          }));
+        }));
+      }));
+    }));
     await();
   }
 
   private <K, V> void testMapReplaceIfPresent(K k, V v, V other) {
-    getVertx().sharedData().<K, V>getClusterWideMap("foo", ar -> {
-      assertTrue(ar.succeeded());
-      AsyncMap<K, V> map = ar.result();
-      map.put(k, v, ar2 -> {
-        assertTrue(ar2.succeeded());
-        assertNull(ar2.result());
-        getVertx().sharedData().<K, V>getClusterWideMap("foo", ar3 -> {
-          AsyncMap<K, V> map2 = ar.result();
-          map2.replaceIfPresent(k, v, other, ar4 -> {
-            assertTrue(ar4.result());
-            map2.replaceIfPresent(k, v, other, ar5 -> {
-              assertFalse(ar5.result());
-              map2.get(k, ar6 -> {
-                assertEquals(other, ar6.result());
+    getVertx().sharedData().<K, V>getClusterWideMap("foo", onSuccess(map -> {
+      map.put(k, v, onSuccess(res -> {
+        assertNull(res);
+        getVertx().sharedData().<K, V>getClusterWideMap("foo", onSuccess(map2 -> {
+          map2.replaceIfPresent(k, v, other, onSuccess(res2 -> {
+            map2.replaceIfPresent(k, v, other, onSuccess(res3 -> {
+              assertFalse(res3);
+              map2.get(k, onSuccess(res4 -> {
+                assertEquals(other, res4);
                 testComplete();
-              });
-            });
-          });
-        });
-      });
-    });
+              }));
+            }));
+          }));
+        }));
+      }));
+    }));
     await();
   }
 

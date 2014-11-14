@@ -34,9 +34,9 @@ import io.vertx.core.Future;
 import io.vertx.core.Handler;
 import io.vertx.core.MultiMap;
 import io.vertx.core.buffer.Buffer;
-import io.vertx.core.file.impl.PathAdjuster;
 import io.vertx.core.http.HttpHeaders;
 import io.vertx.core.http.HttpServerResponse;
+import io.vertx.core.impl.ContextImpl;
 import io.vertx.core.impl.VertxInternal;
 
 import java.io.File;
@@ -341,16 +341,21 @@ public class HttpServerResponseImpl implements HttpServerResponse {
     return this;
   }
 
+  @Override
+  public boolean ended() {
+    return written;
+  }
+
   private void doSendFile(String filename, String notFoundResource, final Handler<AsyncResult<Void>> resultHandler) {
     if (headWritten) {
       throw new IllegalStateException("Head already written");
     }
     checkWritten();
-    File file = new File(PathAdjuster.adjust(vertx, filename));
+    File file = vertx.resolveFile(filename);
     if (!file.exists()) {
       if (notFoundResource != null) {
         setStatusCode(HttpResponseStatus.NOT_FOUND.code());
-        sendFile(notFoundResource, (String) null, resultHandler);
+        sendFile(notFoundResource, null, resultHandler);
       } else {
         sendNotFound();
       }
@@ -379,22 +384,16 @@ public class HttpServerResponseImpl implements HttpServerResponse {
       channelFuture = conn.writeToChannel(LastHttpContent.EMPTY_LAST_CONTENT);
       headWritten = written = true;
 
+      ContextImpl ctx = vertx.getOrCreateContext();
       if (resultHandler != null) {
-        channelFuture.addListener(new ChannelFutureListener() {
-          public void operationComplete(ChannelFuture future) throws Exception {
-            final AsyncResult<Void> res;
-            if (future.isSuccess()) {
-              res = Future.completedFuture();
-            } else {
-              res = Future.completedFuture(future.cause());
-            }
-            vertx.runOnContext(new Handler<Void>() {
-              @Override
-              public void handle(Void v) {
-                resultHandler.handle(res);
-              }
-            });
+        channelFuture.addListener(future -> {
+          AsyncResult<Void> res;
+          if (future.isSuccess()) {
+            res = Future.completedFuture();
+          } else {
+            res = Future.completedFuture(future.cause());
           }
+          ctx.execute(() -> resultHandler.handle(res), true);
         });
       }
 

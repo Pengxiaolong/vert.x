@@ -29,6 +29,7 @@ import io.vertx.core.spi.VerticleFactory;
 
 import java.io.File;
 import java.net.MalformedURLException;
+import java.net.URISyntaxException;
 import java.net.URL;
 import java.net.URLClassLoader;
 import java.util.ArrayList;
@@ -43,6 +44,7 @@ import java.util.Set;
 import java.util.UUID;
 import java.util.WeakHashMap;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 
 /**
@@ -74,24 +76,45 @@ public class DeploymentManager {
     defaultFactories.add(defaultFactory);
   }
 
+  private String generateDeploymentID() {
+    return UUID.randomUUID().toString();
+  }
+
   public void deployVerticle(Verticle verticle, DeploymentOptions options,
                              Handler<AsyncResult<String>> completionHandler) {
     ContextImpl currentContext = vertx.getOrCreateContext();
-    doDeploy("java:" + verticle.getClass().getName(), verticle, options, currentContext, completionHandler,
-             getCurrentClassLoader());
+    doDeploy("java:" + verticle.getClass().getName(), generateDeploymentID(), options, currentContext, currentContext, completionHandler,
+             getCurrentClassLoader(), null, verticle);
   }
 
   public void deployVerticle(String identifier,
                              DeploymentOptions options,
                              Handler<AsyncResult<String>> completionHandler) {
-    doDeployVerticle(identifier, options, completionHandler);
+    ContextImpl callingContext = vertx.getOrCreateContext();
+    ClassLoader cl = getClassLoader(options, callingContext);
+    Redeployer redeployer = getRedeployer(options, cl, callingContext);
+    doDeployVerticle(identifier, generateDeploymentID(), options, callingContext, callingContext, cl, redeployer, completionHandler);
+  }
+
+  private void doRedeployVerticle(String identifier,
+                                  String deploymentID,
+                                  DeploymentOptions options,
+                                  ContextImpl parentContext,
+                                  ContextImpl callingContext,
+                                  Redeployer redeployer,
+                                  Handler<AsyncResult<String>> completionHandler) {
+    ClassLoader cl = getClassLoader(options, parentContext);
+    doDeployVerticle(identifier, deploymentID, options, parentContext, callingContext, cl, redeployer, completionHandler);
   }
 
   private void doDeployVerticle(String identifier,
+                                String deploymentID,
                                 DeploymentOptions options,
+                                ContextImpl parentContext,
+                                ContextImpl callingContext,
+                                ClassLoader cl,
+                                Redeployer redeployer,
                                 Handler<AsyncResult<String>> completionHandler) {
-    ContextImpl currentContext = vertx.getOrCreateContext();
-    ClassLoader cl = getClassLoader(options);
     List<VerticleFactory> verticleFactories = resolveFactories(identifier);
     Iterator<VerticleFactory> iter = verticleFactories.iterator();
     while (iter.hasNext()) {
@@ -104,17 +127,19 @@ public class DeploymentManager {
             return;
           }
         }
-        Verticle verticle = verticleFactory.createVerticle(identifier, cl);
-        if (verticle == null) {
-          throw new NullPointerException("VerticleFactory::createVerticle returned null");
-        } else {
-          doDeploy(identifier, verticle, options, currentContext, completionHandler, cl);
-          return;
+        Verticle[] verticles = new Verticle[options.getInstances()];
+        for (int i = 0; i < options.getInstances(); i++) {
+          verticles[i] = verticleFactory.createVerticle(identifier, cl);
+          if (verticles[i] == null) {
+            throw new NullPointerException("VerticleFactory::createVerticle returned null");
+          }
         }
+        doDeploy(identifier, deploymentID, options, parentContext, callingContext, completionHandler, cl, redeployer, verticles);
+        return;
       } catch (Exception e) {
         if (!iter.hasNext()) {
           // Report failure if there are no more factories to try otherwise try the next one
-          reportFailure(e, currentContext, completionHandler);
+          reportFailure(e, callingContext, completionHandler);
         }
       }
     }
@@ -257,7 +282,17 @@ public class DeploymentManager {
     return factoryList;
   }
 
-  private ClassLoader getClassLoader(DeploymentOptions options) {
+  private boolean isTopMostDeployment(ContextImpl context) {
+    return context.getDeployment() == null;
+  }
+
+  private ClassLoader getClassLoader(DeploymentOptions options, ContextImpl parentContext) {
+    if (shouldEnableRedployment(options, parentContext)) {
+      // For redeploy we need to use a unique value of isolationGroup as we need a new classloader each time
+      // to ensure classes get reloaded, so we overwrite any value of isolation group
+      // Also we only do redeploy on top most deployments
+      setRedeployIsolationGroup(options);
+    }
     String isolationGroup = options.getIsolationGroup();
     ClassLoader cl;
     if (isolationGroup == null) {
@@ -296,6 +331,35 @@ public class DeploymentManager {
     return cl;
   }
 
+  private void setRedeployIsolationGroup(DeploymentOptions options) {
+    options.setIsolationGroup("redeploy-" + UUID.randomUUID().toString());
+  }
+
+  private boolean shouldEnableRedployment(DeploymentOptions options, ContextImpl parentContext) {
+    return options.isRedeploy() && isTopMostDeployment(parentContext);
+  }
+
+  private Redeployer getRedeployer(DeploymentOptions options, ClassLoader cl, ContextImpl parentContext) {
+    if (shouldEnableRedployment(options, parentContext)) {
+      // We only do redeploy on top most deployments
+      setRedeployIsolationGroup(options);
+
+      URLClassLoader urlc = (URLClassLoader)cl;
+      // Convert cp to files
+      Set<File> filesToWatch = new HashSet<>();
+      for (URL url: urlc.getURLs()) {
+        try {
+          filesToWatch.add(new File(url.toURI()));
+        } catch (IllegalArgumentException | URISyntaxException ignore) {
+          // Probably non file url
+        }
+      }
+      return new Redeployer(filesToWatch, options.getRedeployGracePeriod());
+    } else {
+      return null;
+    }
+  }
+
   private ClassLoader getCurrentClassLoader() {
     ClassLoader cl = Thread.currentThread().getContextClassLoader();
     if (cl == null) {
@@ -329,66 +393,96 @@ public class DeploymentManager {
     });
   }
 
-  private void doDeploy(String identifier, Verticle verticle, DeploymentOptions options,
-                        ContextImpl currentContext,
+  private void doDeploy(String identifier, String deploymentID, DeploymentOptions options,
+                        ContextImpl parentContext,
+                        ContextImpl callingContext,
                         Handler<AsyncResult<String>> completionHandler,
-                        ClassLoader tccl) {
+                        ClassLoader tccl, Redeployer redeployer, Verticle... verticles) {
     if (options.isMultiThreaded() && !options.isWorker()) {
       throw new IllegalArgumentException("If multi-threaded then must be worker too");
     }
-    String deploymentID = UUID.randomUUID().toString();
     JsonObject conf = options.getConfig() == null ? new JsonObject() : options.getConfig().copy(); // Copy it
-    ContextImpl context = options.isWorker() ? vertx.createWorkerContext(options.isMultiThreaded(), deploymentID, conf, tccl) :
-                                               vertx.createEventLoopContext(deploymentID, conf, tccl);
 
-    DeploymentImpl deployment = new DeploymentImpl(deploymentID, context, identifier, verticle, options);
-    context.setDeployment(deployment);
-    Deployment parent = currentContext.getDeployment();
+    DeploymentImpl deployment = new DeploymentImpl(deploymentID, identifier, options, redeployer, parentContext);
+
+    Deployment parent = parentContext.getDeployment();
     if (parent != null) {
       parent.addChild(deployment);
       deployment.child = true;
     }
-    context.runOnContext(v -> {
-      try {
-        verticle.setVertx(vertx);
-        Future<Void> startFuture = Future.future();
-        verticle.start(startFuture);
-        startFuture.setHandler(ar -> {
-          if (ar.succeeded()) {
-            vertx.metricsSPI().verticleDeployed(verticle);
-            deployments.put(deploymentID, deployment);
-            reportSuccess(deploymentID, currentContext, completionHandler);
-          } else {
-            reportFailure(ar.cause(), currentContext, completionHandler);
-          }
-        });
-      } catch (Throwable t) {
-        reportFailure(t, currentContext, completionHandler);
-      }
-    });
+    AtomicInteger deployCount = new AtomicInteger();
+    AtomicBoolean failureReported = new AtomicBoolean();
+    for (Verticle verticle: verticles) {
+      ContextImpl context = options.isWorker() ? vertx.createWorkerContext(options.isMultiThreaded(), deploymentID, conf, tccl) :
+        vertx.createEventLoopContext(deploymentID, conf, tccl);
+      context.setDeployment(deployment);
+      deployment.addVerticle(new VerticleHolder(verticle, context));
+      context.runOnContext(v -> {
+        try {
+          verticle.init(vertx, context);
+          Future<Void> startFuture = Future.future();
+          verticle.start(startFuture);
+          startFuture.setHandler(ar -> {
+            if (ar.succeeded()) {
+              vertx.metricsSPI().verticleDeployed(verticle);
+              deployments.put(deploymentID, deployment);
+              if (deployCount.incrementAndGet() == verticles.length) {
+                reportSuccess(deploymentID, callingContext, completionHandler);
+                deployment.startRedeployTimer();
+              }
+            } else if (!failureReported.get()) {
+              reportFailure(ar.cause(), callingContext, completionHandler);
+            }
+          });
+        } catch (Throwable t) {
+          reportFailure(t, callingContext, completionHandler);
+        }
+      });
+    }
+  }
+
+  static class VerticleHolder {
+    final Verticle verticle;
+    final ContextImpl context;
+
+    VerticleHolder(Verticle verticle, ContextImpl context) {
+      this.verticle = verticle;
+      this.context = context;
+    }
   }
 
   private class DeploymentImpl implements Deployment {
 
-    private final String id;
-    private final ContextImpl context;
-    private final String identifier;
-    private final Verticle verticle;
+    private final String deploymentID;
+    private final String verticleIdentifier;
+    private List<VerticleHolder> verticles = new ArrayList<>();
     private final Set<Deployment> children = new ConcurrentHashSet<>();
     private final DeploymentOptions options;
+    private final Redeployer redeployer;
+    private final ContextImpl parentContext; // This is the context that did the deploy, not the verticle context
     private boolean undeployed;
+    private boolean broken;
     private volatile boolean child;
+    private long redeployTimerID = -1;
 
-    private DeploymentImpl(String id, ContextImpl context, String identifier, Verticle verticle, DeploymentOptions options) {
-      this.id = id;
-      this.context = context;
-      this.identifier = identifier;
-      this.verticle = verticle;
+    private DeploymentImpl(String deploymentID, String verticleIdentifier, DeploymentOptions options, Redeployer redeployer,
+                           ContextImpl parentContext) {
+      this.deploymentID = deploymentID;
+      this.verticleIdentifier = verticleIdentifier;
       this.options = options;
+      this.redeployer = redeployer;
+      this.parentContext = parentContext;
+    }
+
+    public void addVerticle(VerticleHolder holder) {
+      verticles.add(holder);
     }
 
     @Override
     public void undeploy(Handler<AsyncResult<Void>> completionHandler) {
+      if (redeployTimerID != -1) {
+        vertx.cancelTimer(redeployTimerID);
+      }
       ContextImpl currentContext = vertx.getOrCreateContext();
       if (!undeployed) {
         doUndeploy(currentContext, completionHandler);
@@ -414,35 +508,41 @@ public class DeploymentManager {
         }
       } else {
         undeployed = true;
-        context.runOnContext(v -> {
-          Future<Void> stopFuture = Future.future();
-          stopFuture.setHandler(ar -> {
-            deployments.remove(id);
-            vertx.metricsSPI().verticleUndeployed(verticle);
-            context.runCloseHooks(ar2 -> {
-              if (ar2.failed()) {
-                // Log error but we report success anyway
-                log.error("Failed to run close hook", ar2.cause());
-              }
-              if (ar.succeeded()) {
-                reportSuccess(null, undeployingContext, completionHandler);
-              } else {
-                reportFailure(ar.cause(), undeployingContext, completionHandler);
-              }
+        AtomicInteger undeployCount = new AtomicInteger();
+        for (VerticleHolder verticleHolder: verticles) {
+          ContextImpl context = verticleHolder.context;
+          context.runOnContext(v -> {
+            Future<Void> stopFuture = Future.future();
+            AtomicBoolean failureReported = new AtomicBoolean();
+            stopFuture.setHandler(ar -> {
+              deployments.remove(deploymentID);
+              vertx.metricsSPI().verticleUndeployed(verticleHolder.verticle);
+              context.runCloseHooks(ar2 -> {
+                if (ar2.failed()) {
+                  // Log error but we report success anyway
+                  log.error("Failed to run close hook", ar2.cause());
+                }
+                if (ar.succeeded() && undeployCount.incrementAndGet() == verticles.size()) {
+                  reportSuccess(null, undeployingContext, completionHandler);
+                } else if (ar.failed() && !failureReported.get()) {
+                  failureReported.set(true);
+                  reportFailure(ar.cause(), undeployingContext, completionHandler);
+                }
+              });
             });
+            try {
+              verticleHolder.verticle.stop(stopFuture);
+            } catch (Throwable t) {
+              stopFuture.fail(t);
+            }
           });
-          try {
-            verticle.stop(stopFuture);
-          } catch (Throwable t) {
-            stopFuture.fail(t);
-          }
-        });
+        }
       }
     }
 
     @Override
-    public String identifier() {
-      return identifier;
+    public String verticleIdentifier() {
+      return verticleIdentifier;
     }
 
     @Override
@@ -456,8 +556,12 @@ public class DeploymentManager {
     }
 
     @Override
-    public Verticle getVerticle() {
-      return verticle;
+    public Set<Verticle> getVerticles() {
+      Set<Verticle> verts = new HashSet<>();
+      for (VerticleHolder holder: verticles) {
+        verts.add(holder.verticle);
+      }
+      return verts;
     }
 
     @Override
@@ -465,6 +569,65 @@ public class DeploymentManager {
       return child;
     }
 
+    @Override
+    public String deploymentID() {
+      return deploymentID;
+    }
+
+    // This is run on the context of the actual verticle, not the context that did the deploy
+    private void startRedeployTimer() {
+      if (redeployer != null) {
+        doStartRedeployTimer();
+      }
+    }
+
+    private void doStartRedeployTimer() {
+      redeployTimerID = vertx.setTimer(options.getRedeployScanPeriod(), tid -> {
+        vertx.executeBlocking(redeployer, res -> {
+          if (res.succeeded()) {
+            if (res.result()) {
+              doRedeploy();
+            } else if (!undeployed || broken) {
+              doStartRedeployTimer();
+            }
+          } else {
+            log.error("Failure in redeployer", res.cause());
+          }
+        });
+      });
+    }
+
+    private void doRedeploy() {
+      log.trace("Redeploying!");
+      log.trace("Undeploying " + this.deploymentID);
+      if (!broken) {
+        undeploy(res -> {
+          if (res.succeeded()) {
+            log.trace("Undeployed ok");
+            tryRedeploy();
+          } else {
+            log.error("Can't find verticle to undeploy", res.cause());
+          }
+        });
+      } else {
+        tryRedeploy();
+      }
+    }
+
+    private void tryRedeploy() {
+      ContextImpl callingContext = vertx.getContext();
+      doRedeployVerticle(verticleIdentifier, deploymentID, options, parentContext, callingContext, redeployer, res2 -> {
+        if (res2.succeeded()) {
+          broken = false;
+          undeployed = false;
+          log.trace("Redeployed ok");
+        } else {
+          log.trace("Failed to deploy!!");
+          broken = true;
+          doStartRedeployTimer();
+        }
+      });
+    }
   }
 
 }

@@ -116,6 +116,18 @@ public class TestUtils {
   }
 
   /**
+   * @return a random positive long
+   */
+  public static long randomPositiveLong() {
+    while (true) {
+      long rand = random.nextLong();
+      if (rand > 0) {
+        return rand;
+      }
+    }
+  }
+
+  /**
    * @return a random long
    */
   public static long randomLong() {
@@ -237,6 +249,19 @@ public class TestUtils {
       runnable.run();
       fail("Should throw IllegalStateException");
     } catch (IllegalStateException e) {
+      // OK
+    }
+  }
+
+  /**
+   * Asserts that an IndexOutOfBoundsException is thrown by the code block.
+   * @param runnable code block to execute
+   */
+  public static void assertIndexOutOfBoundsException(Runnable runnable) {
+    try {
+      runnable.run();
+      fail("Should throw IndexOutOfBoundsException");
+    } catch (IndexOutOfBoundsException e) {
       // OK
     }
   }

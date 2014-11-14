@@ -25,6 +25,7 @@ import io.vertx.core.Context;
 import io.vertx.core.DeploymentOptions;
 import io.vertx.core.Future;
 import io.vertx.core.Handler;
+import io.vertx.core.TimeoutStream;
 import io.vertx.core.Verticle;
 import io.vertx.core.Vertx;
 import io.vertx.core.VertxOptions;
@@ -62,8 +63,8 @@ import io.vertx.core.spi.VerticleFactory;
 import io.vertx.core.spi.VertxMetricsFactory;
 import io.vertx.core.spi.cluster.Action;
 import io.vertx.core.spi.cluster.ClusterManager;
-import io.vertx.core.streams.ReadStream;
 
+import java.io.File;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.Map;
@@ -92,7 +93,7 @@ public class VertxImpl implements VertxInternal {
   }
 
   private final FileSystem fileSystem = getFileSystem();
-  private EventBus eventBus;
+  private EventBusImpl eventBus;
   private final SharedData sharedData;
   private final VertxMetrics metrics;
 
@@ -110,6 +111,7 @@ public class VertxImpl implements VertxInternal {
   private final AtomicLong timeoutCounter = new AtomicLong(0);
   private final ClusterManager clusterManager;
   private final DeploymentManager deploymentManager;
+  private final FileResolver fileResolver;
   private boolean closed;
   private HAManager haManager;
 
@@ -123,6 +125,7 @@ public class VertxImpl implements VertxInternal {
 
   VertxImpl(VertxOptions options, Handler<AsyncResult<Vertx>> resultHandler) {
     configurePools(options);
+    this.fileResolver = new FileResolver(this);
     this.deploymentManager = new DeploymentManager(this);
     this.metrics = initialiseMetrics(options);
     if (options.isClustered()) {
@@ -136,7 +139,8 @@ public class VertxImpl implements VertxInternal {
           haManager = new HAManager(this, deploymentManager, clusterManager, options.getQuorumSize(), options.getHAGroup());
         }
         Vertx inst = this;
-        eventBus = new EventBusImpl(this, options.getProxyOperationTimeout(), options.getClusterPort(), options.getClusterHost(), clusterManager, res -> {
+        eventBus = new EventBusImpl(this, options.getClusterPingInterval(),
+            options.getClusterPingReplyInterval(),  options.getClusterPort(), options.getClusterHost(), clusterManager, res -> {
           if (resultHandler != null) {
             if (res.succeeded()) {
               resultHandler.handle(Future.completedFuture(inst));
@@ -152,7 +156,7 @@ public class VertxImpl implements VertxInternal {
     } else {
       this.clusterManager = null;
       this.sharedData = new SharedDataImpl(this, clusterManager);
-      this.eventBus = new EventBusImpl(this, options.getProxyOperationTimeout());
+      this.eventBus = new EventBusImpl(this);
       if (resultHandler != null) {
         resultHandler.handle(Future.completedFuture(this));
       }
@@ -204,8 +208,8 @@ public class VertxImpl implements VertxInternal {
   }
 
   @Override
-  public ReadStream<Long> periodicStream(long delay) {
-    return new TimeoutStream(delay, true);
+  public TimeoutStream periodicStream(long delay) {
+    return new TimeoutStreamImpl(delay, true);
   }
 
   public long setTimer(long delay, Handler<Long> handler) {
@@ -213,8 +217,8 @@ public class VertxImpl implements VertxInternal {
   }
 
   @Override
-  public ReadStream<Long> timerStream(long delay) {
-    return new TimeoutStream(delay, false);
+  public TimeoutStream timerStream(long delay) {
+    return new TimeoutStreamImpl(delay, false);
   }
 
   public void runOnContext(Handler<Void> task) {
@@ -413,33 +417,30 @@ public class VertxImpl implements VertxInternal {
           sharedNetServers.clear();
         }
 
-        if (workerPool != null) {
-          workerPool.shutdown();
-          try {
-            if (workerPool != null) {
-              workerPool.awaitTermination(20, TimeUnit.SECONDS);
-            }
-          } catch (InterruptedException ex) {
-            // ignore
+        fileResolver.deleteCacheDir(res -> {
+
+          if (workerPool != null) {
+            workerPool.shutdownNow();
           }
-        }
 
-        if (eventLoopGroup != null) {
-          eventLoopGroup.shutdownNow();
-        }
+          if (eventLoopGroup != null) {
+            eventLoopGroup.shutdownNow();
+          }
 
-        if (metrics != null) {
-          metrics.close();
-        }
+          if (metrics != null) {
+            metrics.close();
+          }
 
-        checker.close();
+          checker.close();
 
-        setContext(null);
+          setContext(null);
 
-        if (completionHandler != null) {
-          // Call directly - we have no context
-          completionHandler.handle(Future.completedFuture());
-        }
+          if (completionHandler != null) {
+            // Call directly - we have no context
+            completionHandler.handle(Future.completedFuture());
+          }
+        });
+
       });
     });
   }
@@ -481,7 +482,7 @@ public class VertxImpl implements VertxInternal {
 
   @Override
   public void deployVerticle(String identifier, DeploymentOptions options, Handler<AsyncResult<String>> completionHandler) {
-    if (options.isHA() && haManager != null) {
+    if (options.isHa() && haManager != null) {
       haManager.deployVerticle(identifier, options, completionHandler);
     } else {
       deploymentManager.deployVerticle(identifier, options, completionHandler);
@@ -495,7 +496,8 @@ public class VertxImpl implements VertxInternal {
 
   @Override
   public void undeployVerticle(String deploymentID) {
-    undeployVerticle(deploymentID, res -> {});
+    undeployVerticle(deploymentID, res -> {
+    });
   }
 
   @Override
@@ -540,6 +542,11 @@ public class VertxImpl implements VertxInternal {
   }
 
   @Override
+  public void simulateEventBusUnresponsive() {
+    eventBus.simulateUnresponsive();
+  }
+
+  @Override
   public Deployment getDeployment(String deploymentID) {
     return deploymentManager.getDeployment(deploymentID);
   }
@@ -566,6 +573,11 @@ public class VertxImpl implements VertxInternal {
   @Override
   public VertxMetrics metricsSPI() {
     return metrics;
+  }
+
+  @Override
+  public File resolveFile(String fileName) {
+    return fileResolver.resolveFile(fileName);
   }
 
   private void configurePools(VertxOptions options) {
@@ -632,7 +644,7 @@ public class VertxImpl implements VertxInternal {
 
   }
 
-  private class TimeoutStream implements ReadStream<Long>, Handler<Long> {
+  private class TimeoutStreamImpl implements TimeoutStream, Handler<Long> {
 
     private final long delay;
     private final boolean periodic;
@@ -641,7 +653,7 @@ public class VertxImpl implements VertxInternal {
     private Handler<Long> handler;
     private Handler<Void> endHandler;
 
-    public TimeoutStream(long delay, boolean periodic) {
+    public TimeoutStreamImpl(long delay, boolean periodic) {
       this.delay = delay;
       this.periodic = periodic;
     }
@@ -661,12 +673,17 @@ public class VertxImpl implements VertxInternal {
     }
 
     @Override
-    public ReadStream<Long> exceptionHandler(Handler<Throwable> handler) {
+    public TimeoutStream exceptionHandler(Handler<Throwable> handler) {
       return this;
     }
 
     @Override
-    public ReadStream<Long> handler(Handler<Long> handler) {
+    public void cancel() {
+      handler(null);
+    }
+
+    @Override
+    public TimeoutStream handler(Handler<Long> handler) {
       if (handler != null) {
         if (id != null) {
           throw new IllegalStateException();
@@ -685,19 +702,19 @@ public class VertxImpl implements VertxInternal {
     }
 
     @Override
-    public ReadStream<Long> pause() {
+    public TimeoutStream pause() {
       this.paused = true;
       return this;
     }
 
     @Override
-    public ReadStream<Long> resume() {
+    public TimeoutStream resume() {
       this.paused = false;
       return null;
     }
 
     @Override
-    public ReadStream<Long> endHandler(Handler<Void> endHandler) {
+    public TimeoutStream endHandler(Handler<Void> endHandler) {
       this.endHandler = endHandler;
       return this;
     }

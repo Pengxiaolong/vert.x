@@ -21,6 +21,7 @@ import io.netty.buffer.Unpooled;
 import io.vertx.core.AsyncResultHandler;
 import io.vertx.core.Handler;
 import io.vertx.core.buffer.Buffer;
+import io.vertx.core.file.AsyncFile;
 import io.vertx.core.file.FileProps;
 import io.vertx.core.file.FileSystemException;
 import io.vertx.core.file.FileSystemProps;
@@ -50,6 +51,7 @@ import java.util.List;
 import java.util.Set;
 import java.util.concurrent.atomic.AtomicInteger;
 
+import static io.vertx.test.core.TestUtils.assertIllegalArgumentException;
 import static io.vertx.test.core.TestUtils.assertNullPointerException;
 
 /**
@@ -148,6 +150,24 @@ public class FileSystemTest extends VertxTestBase {
     assertNullPointerException(() -> vertx.fileSystem().existsSync(null));
     assertNullPointerException(() -> vertx.fileSystem().fsProps(null, h -> {}));
     assertNullPointerException(() -> vertx.fileSystem().fsPropsSync(null));
+
+    String fileName = "some-file.dat";
+    AsyncFile asyncFile = vertx.fileSystem().openSync(testDir + pathSep + fileName, new OpenOptions());
+
+    assertNullPointerException(() -> asyncFile.write(null));
+    assertIllegalArgumentException(() -> asyncFile.setWriteQueueMaxSize(1));
+    assertIllegalArgumentException(() -> asyncFile.setWriteQueueMaxSize(0));
+    assertIllegalArgumentException(() -> asyncFile.setWriteQueueMaxSize(-1));
+    assertNullPointerException(() -> asyncFile.write(null, 0, h -> {}));
+    assertNullPointerException(() -> asyncFile.write(Buffer.buffer(), 0, null));
+    assertIllegalArgumentException(() -> asyncFile.write(Buffer.buffer(), -1, h -> {}));
+
+    assertNullPointerException(() -> asyncFile.read(null, 0, 0, 0, h -> {}));
+    assertNullPointerException(() -> asyncFile.read(Buffer.buffer(), 0, 0, 0, null));
+
+    assertIllegalArgumentException(() -> asyncFile.read(Buffer.buffer(), -1, 0, 0, h -> {}));
+    assertIllegalArgumentException(() -> asyncFile.read(Buffer.buffer(), 0, -1, 0, h -> {}));
+    assertIllegalArgumentException(() -> asyncFile.read(Buffer.buffer(), 0, 0, -1, h -> {}));
   }
 
   @Test
@@ -1108,6 +1128,49 @@ public class FileSystemTest extends VertxTestBase {
   }
 
   @Test
+  public void testWriteStreamAppend() throws Exception {
+    String fileName = "some-file.dat";
+    int chunkSize = 1000;
+    int chunks = 10;
+    byte[] existing = TestUtils.randomByteArray(1000);
+    createFile(fileName, existing);
+    byte[] content = TestUtils.randomByteArray(chunkSize * chunks);
+    Buffer buff = Buffer.buffer(content);
+    vertx.fileSystem().open(testDir + pathSep + fileName, new OpenOptions(), ar -> {
+      if (ar.succeeded()) {
+        AsyncFile ws = ar.result();
+        long size = vertx.fileSystem().propsSync(testDir + pathSep + fileName).size();
+        ws.setWritePos(size);
+        ws.exceptionHandler(t -> fail(t.getMessage()));
+        for (int i = 0; i < chunks; i++) {
+          Buffer chunk = buff.getBuffer(i * chunkSize, (i + 1) * chunkSize);
+          assertEquals(chunkSize, chunk.length());
+          ws.write(chunk);
+        }
+        ar.result().close(ar2 -> {
+          if (ar2.failed()) {
+            fail(ar2.cause().getMessage());
+          } else {
+            assertTrue(fileExists(fileName));
+            byte[] readBytes;
+            try {
+              readBytes = Files.readAllBytes(Paths.get(testDir + pathSep + fileName));
+            } catch (IOException e) {
+              fail(e.getMessage());
+              return;
+            }
+            assertEquals(Buffer.buffer(existing).appendBuffer(buff), Buffer.buffer(readBytes));
+            testComplete();
+          }
+        });
+      } else {
+        fail(ar.cause().getMessage());
+      }
+    });
+    await();
+  }
+
+  @Test
   public void testWriteStreamWithCompositeBuffer() throws Exception {
     String fileName = "some-file.dat";
     int chunkSize = 1000;
@@ -1163,7 +1226,7 @@ public class FileSystemTest extends VertxTestBase {
             if (ar2.failed()) {
               fail(ar2.cause().getMessage());
             } else {
-              assertEquals(buff, Buffer.buffer(content));
+              assertEquals(Buffer.buffer(content), buff);
               testComplete();
             }
           });
@@ -1176,6 +1239,41 @@ public class FileSystemTest extends VertxTestBase {
   }
 
   @Test
+  public void testReadStreamSetReadPos() throws Exception {
+    String fileName = "some-file.dat";
+    int chunkSize = 1000;
+    int chunks = 10;
+    byte[] content = TestUtils.randomByteArray(chunkSize * chunks);
+    createFile(fileName, content);
+    vertx.fileSystem().open(testDir + pathSep + fileName, new OpenOptions(), ar -> {
+      if (ar.succeeded()) {
+        AsyncFile rs = ar.result();
+        rs.setReadPos(chunkSize * chunks / 2);
+        Buffer buff = Buffer.buffer();
+        rs.handler(buff::appendBuffer);
+        rs.exceptionHandler(t -> fail(t.getMessage()));
+        rs.endHandler(v -> {
+          ar.result().close(ar2 -> {
+            if (ar2.failed()) {
+              fail(ar2.cause().getMessage());
+            } else {
+              assertEquals(chunkSize * chunks / 2, buff.length());
+              byte[] lastHalf = new byte[chunkSize * chunks / 2];
+              System.arraycopy(content, chunkSize * chunks / 2, lastHalf, 0, chunkSize * chunks / 2);
+              assertEquals(Buffer.buffer(lastHalf), buff);
+              testComplete();
+            }
+          });
+        });
+      } else {
+        fail(ar.cause().getMessage());
+      }
+    });
+    await();
+  }
+
+  @Test
+  @SuppressWarnings("unchecked")
   public void testPumpFileStreams() throws Exception {
     String fileName1 = "some-file.dat";
     String fileName2 = "some-other-file.dat";

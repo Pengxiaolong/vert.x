@@ -21,6 +21,8 @@ import io.vertx.core.DeploymentOptions;
 import io.vertx.core.Handler;
 import io.vertx.core.Verticle;
 
+import java.util.Set;
+
 /**
  * @author <a href="http://tfox.org">Tim Fox</a>
  */
@@ -32,11 +34,13 @@ public interface Deployment {
 
   void doUndeploy(ContextImpl undeployingContext, Handler<AsyncResult<Void>> completionHandler);
 
-  String identifier();
+  String deploymentID();
+
+  String verticleIdentifier();
 
   DeploymentOptions deploymentOptions();
 
-  Verticle getVerticle();
+  Set<Verticle> getVerticles();
 
   boolean isChild();
 }
